@@ -1,0 +1,264 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|Win32">
+      <Configuration>Debug</Configuration>
+      <Platform>Win32</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|Win32">
+      <Configuration>Release</Configuration>
+      <Platform>Win32</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <VCProjectVersion>16.0</VCProjectVersion>
+    <Keyword>Win32Proj</Keyword>
+    <ProjectGuid>{0bdfcec1-c16f-4003-b477-02e3ca8cc3e4}</ProjectGuid>
+    <RootNamespace>AutoGrad</RootNamespace>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+    <SccProjectName>SAK</SccProjectName>
+    <SccAuxPath>SAK</SccAuxPath>
+    <SccLocalPath>SAK</SccLocalPath>
+    <SccProvider>SAK</SccProvider>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <UseDebugLibraries>true</UseDebugLibraries>
+    <PlatformToolset>v143</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>v143</PlatformToolset>
+    <WholeProgramOptimization>true</WholeProgramOptimization>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <UseDebugLibraries>true</UseDebugLibraries>
+    <PlatformToolset>v143</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>v143</PlatformToolset>
+    <WholeProgramOptimization>true</WholeProgramOptimization>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ImportGroup Label="ExtensionSettings">
+  </ImportGroup>
+  <ImportGroup Label="Shared">
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <PropertyGroup Label="UserMacros" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
+    <LinkIncremental>true</LinkIncremental>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
+    <LinkIncremental>false</LinkIncremental>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <LinkIncremental>true</LinkIncremental>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <LinkIncremental>false</LinkIncremental>
+  </PropertyGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
+    <ClCompile>
+      <WarningLevel>Level3</WarningLevel>
+      <SDLCheck>true</SDLCheck>
+      <PreprocessorDefinitions>WIN32;_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <ConformanceMode>true</ConformanceMode>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+    </ClCompile>
+    <Link>
+      <SubSystem>Console</SubSystem>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
+    <ClCompile>
+      <WarningLevel>Level3</WarningLevel>
+      <FunctionLevelLinking>true</FunctionLevelLinking>
+      <IntrinsicFunctions>true</IntrinsicFunctions>
+      <SDLCheck>true</SDLCheck>
+      <PreprocessorDefinitions>WIN32;NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <ConformanceMode>true</ConformanceMode>
+    </ClCompile>
+    <Link>
+      <SubSystem>Console</SubSystem>
+      <EnableCOMDATFolding>true</EnableCOMDATFolding>
+      <OptimizeReferences>true</OptimizeReferences>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <ClCompile>
+      <WarningLevel>Level3</WarningLevel>
+      <SDLCheck>true</SDLCheck>
+      <PreprocessorDefinitions>_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <ConformanceMode>true</ConformanceMode>
+      <LanguageStandard>stdcpp20</LanguageStandard>
+      <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
+    </ClCompile>
+    <Link>
+      <SubSystem>Console</SubSystem>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <ClCompile>
+      <WarningLevel>Level3</WarningLevel>
+      <FunctionLevelLinking>true</FunctionLevelLinking>
+      <IntrinsicFunctions>true</IntrinsicFunctions>
+      <SDLCheck>false</SDLCheck>
+      <PreprocessorDefinitions>NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <ConformanceMode>true</ConformanceMode>
+      <LanguageStandard>stdcpp20</LanguageStandard>
+      <InlineFunctionExpansion>AnySuitable</InlineFunctionExpansion>
+      <FavorSizeOrSpeed>Speed</FavorSizeOrSpeed>
+      <OmitFramePointers>true</OmitFramePointers>
+      <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
+      <BufferSecurityCheck>false</BufferSecurityCheck>
+      <EnableParallelCodeGeneration>true</EnableParallelCodeGeneration>
+      <EnableEnhancedInstructionSet>AdvancedVectorExtensions2</EnableEnhancedInstructionSet>
+      <FloatingPointModel>Fast</FloatingPointModel>
+      <TreatWarningAsError>true</TreatWarningAsError>
+    </ClCompile>
+    <Link>
+      <SubSystem>Console</SubSystem>
+      <EnableCOMDATFolding>true</EnableCOMDATFolding>
+      <OptimizeReferences>true</OptimizeReferences>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <ClCompile Include="AutoGrad.cpp" />
+    <ClCompile Include="KoAdd.cpp" />
+    <ClCompile Include="KoArgMax.cpp" />
+    <ClCompile Include="KoCat.cpp" />
+    <ClCompile Include="KoCrossEntropy.cpp" />
+    <ClCompile Include="KoDiv.cpp" />
+    <ClCompile Include="KoDot.cpp" />
+    <ClCompile Include="KoDropout.cpp" />
+    <ClCompile Include="KoExp.cpp" />
+    <ClCompile Include="KoGather.cpp" />
+    <ClCompile Include="KoIndexSelect.cpp" />
+    <ClCompile Include="KoLog.cpp" />
+    <ClCompile Include="KoMaskedFill.cpp" />
+    <ClCompile Include="KoMean.cpp" />
+    <ClCompile Include="KoMul.cpp" />
+    <ClCompile Include="KoNeg.cpp" />
+    <ClCompile Include="KoPow.cpp" />
+    <ClCompile Include="KoRelu.cpp" />
+    <ClCompile Include="KoRepeat.cpp" />
+    <ClCompile Include="KoReshape.cpp" />
+    <ClCompile Include="KoSlice.cpp" />
+    <ClCompile Include="KoSqueeze.cpp" />
+    <ClCompile Include="KoSub.cpp" />
+    <ClCompile Include="KoSum.cpp" />
+    <ClCompile Include="KoTanh.cpp" />
+    <ClCompile Include="KoTranspose.cpp" />
+    <ClCompile Include="KoUnsqueeze.cpp" />
+    <ClCompile Include="NDAllocator.cpp" />
+    <ClCompile Include="NDThreadPool.cpp" />
+    <ClCompile Include="Random.cpp" />
+    <ClCompile Include="String.cpp" />
+    <ClCompile Include="Test.cpp" />
+    <ClCompile Include="Test_Distribution.cpp" />
+    <ClCompile Include="Test_Embedding.cpp" />
+    <ClCompile Include="Test_Linear.cpp" />
+    <ClCompile Include="Test_NDArray.cpp" />
+    <ClCompile Include="Test_Tensor.cpp" />
+    <ClCompile Include="Tools.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="CategoricalDistribution.h" />
+    <ClInclude Include="CrossEntropyLoss.h" />
+    <ClInclude Include="Dropout.h" />
+    <ClInclude Include="Embedding.h" />
+    <ClInclude Include="Exceptions.h" />
+    <ClInclude Include="Files.h" />
+    <ClInclude Include="KoAdd.h" />
+    <ClInclude Include="KoArgMax.h" />
+    <ClInclude Include="KoCat.h" />
+    <ClInclude Include="KoCrossEntropy.h" />
+    <ClInclude Include="KoDiv.h" />
+    <ClInclude Include="KoDot.h" />
+    <ClInclude Include="Kernel.h" />
+    <ClInclude Include="KoDropout.h" />
+    <ClInclude Include="KoExp.h" />
+    <ClInclude Include="KoGather.h" />
+    <ClInclude Include="KoIndexSelect.h" />
+    <ClInclude Include="KoLog.h" />
+    <ClInclude Include="KoMaskedFill.h" />
+    <ClInclude Include="KoMean.h" />
+    <ClInclude Include="KoMul.h" />
+    <ClInclude Include="KoNeg.h" />
+    <ClInclude Include="KoSlice.h" />
+    <ClInclude Include="KoPow.h" />
+    <ClInclude Include="KoRelu.h" />
+    <ClInclude Include="KoRepeat.h" />
+    <ClInclude Include="KoReshape.h" />
+    <ClInclude Include="KoSqueeze.h" />
+    <ClInclude Include="KoSub.h" />
+    <ClInclude Include="KoSum.h" />
+    <ClInclude Include="KoTanh.h" />
+    <ClInclude Include="KoTranspose.h" />
+    <ClInclude Include="KoUnsqueeze.h" />
+    <ClInclude Include="Layer.h" />
+    <ClInclude Include="Linear.h" />
+    <ClInclude Include="Model.h" />
+    <ClInclude Include="MSELoss.h" />
+    <ClInclude Include="NDAllocator.h" />
+    <ClInclude Include="NDArray.h" />
+    <ClInclude Include="NDShape.h" />
+    <ClInclude Include="Optimiser.h" />
+    <ClInclude Include="Random.h" />
+    <ClInclude Include="RmsProp.h" />
+    <ClInclude Include="Sequential.h" />
+    <ClInclude Include="SGD.h" />
+    <ClInclude Include="String.h" />
+    <ClInclude Include="Tanh.h" />
+    <ClInclude Include="Tensor.h" />
+    <ClInclude Include="Tensors.h" />
+    <ClInclude Include="Test.h" />
+    <ClInclude Include="Test_Distribution.h" />
+    <ClInclude Include="Test_Embedding.h" />
+    <ClInclude Include="Test_Linear.h" />
+    <ClInclude Include="Test_NDArray.h" />
+    <ClInclude Include="Test_Tensor.h" />
+    <ClInclude Include="Tools.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <Text Include="TestData\XeGradients.txt" />
+    <Text Include="TestData\XeLogits.txt" />
+    <Text Include="TestData\XeTargets.txt" />
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <ImportGroup Label="ExtensionTargets">
+  </ImportGroup>
+</Project>
