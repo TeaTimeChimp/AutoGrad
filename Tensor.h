@@ -15,6 +15,7 @@
 #include "KoIndexSelect.h"
 #include "KoLog.h"
 #include "KoMaskedFill.h"
+#include "KoMax.h"
 #include "KoMean.h"
 #include "KoMul.h"
 #include "KoNeg.h"
@@ -378,12 +379,13 @@ public:
 		return Tensor::New(_autograd,{Self()},std::make_shared<KoMaskedFill>(mask->_data,value));
 	}
 
-	TensorPtr Max(const int dim) const
+	TensorPtr Max(int dim) const
 	{
-		if(_autograd)
-			throw NotImplemented();
-		else
-			return Tensor::New(_data.Max(dim));
+		// Reverse dim here to simplify backprop.
+		if(dim<0)
+			dim += (int)Shape().size();
+
+		return Tensor::New(_autograd,{Self()},std::make_shared<KoMax>(dim));
 	}
 
 	TensorPtr Mean(const bool keepDims) const
@@ -440,10 +442,11 @@ public:
 	{
 		// KeepDim=true else backprop would need to add it back (old comment,feel free to change this).
 		// This likely would be more efficient not use add this to the tensor graph and instead add analytic backprop for softmax.
-		if(_autograd)
-			return Exp()->Div(Exp()->Sum(dim,true));
-		else
-			return Exp()->Div(Exp()->Sum(dim,true));
+		// Here we use the numerically equivalent softmax where max(x) is subtracted to avoid e^(large) overflowing.
+		// This avoids overflows which would be catastrophic and instead e^(-large) is close to zero and so does not affect the result.
+		// The word 'large' here is just to indtcate magnitude and does not imply max(x) has it's sign flipped.
+		const TensorPtr expo = Sub(Max(dim))->Exp();
+		return expo->Div(expo->Sum(dim,true));
 	}
 
 	TensorPtr Sqrt() const
@@ -530,7 +533,7 @@ public:
 		TensorPtr r = Sub(Mean(dim,true));
 		r = r->Pow(2.0);
 		r = r->Sum(dim,keepDim);
-		r = r->Div(Tensor::New(NDData::New({},Shape()[dim]-1)));
+		r = r->Div(Tensor::New(NDData::New({},Shape()[dim]-FP(1.0))));
 		return r;
 	}
 

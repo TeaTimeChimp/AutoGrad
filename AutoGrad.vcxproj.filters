@@ -144,6 +144,9 @@
     <ClCompile Include="KoArgMax.cpp">
       <Filter>Source Files\Kernels</Filter>
     </ClCompile>
+    <ClCompile Include="KoMax.cpp">
+      <Filter>Source Files\Kernels</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Layer.h">
@@ -313,6 +316,9 @@
     </ClInclude>
     <ClInclude Include="Tensors.h">
       <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="KoMax.h">
+      <Filter>Header Files\Kernels</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>

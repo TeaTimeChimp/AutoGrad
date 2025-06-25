@@ -46,14 +46,14 @@ public:
 		{
 			bool chosen = false;
 			const FP targetProbability = rnd.Sample();
-			FP probability = 0.0;
+			FP probability_sum = 0.0;
 			size_t category = 0;
 			for(int category=0;category<categoryCount;++category)
 			{
-				probability += _probabilities->Data()[{sample,category}];
-				if(probability>=targetProbability)
+				probability_sum += _probabilities->Data()[{sample,category}];
+				if(probability_sum>=targetProbability)
 				{
-					result->Data()[{sample}]=category;
+					result->Data()[{sample}]=FP(category);
 					chosen = true;
 					break;
 				}

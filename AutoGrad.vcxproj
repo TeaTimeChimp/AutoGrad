@@ -169,6 +169,7 @@
     <ClCompile Include="KoIndexSelect.cpp" />
     <ClCompile Include="KoLog.cpp" />
     <ClCompile Include="KoMaskedFill.cpp" />
+    <ClCompile Include="KoMax.cpp" />
     <ClCompile Include="KoMean.cpp" />
     <ClCompile Include="KoMul.cpp" />
     <ClCompile Include="KoNeg.cpp" />
@@ -215,6 +216,7 @@
     <ClInclude Include="KoIndexSelect.h" />
     <ClInclude Include="KoLog.h" />
     <ClInclude Include="KoMaskedFill.h" />
+    <ClInclude Include="KoMax.h" />
     <ClInclude Include="KoMean.h" />
     <ClInclude Include="KoMul.h" />
     <ClInclude Include="KoNeg.h" />

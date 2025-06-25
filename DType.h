@@ -1,4 +1,5 @@
 #pragma once
 
 
-typedef double FP;
+typedef float FP;
+//typedef double FP;

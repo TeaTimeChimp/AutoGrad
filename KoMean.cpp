@@ -26,7 +26,7 @@ NDArrays KoMean::Scalar_Backward(const NDArray& gradient,const NDArrays& inputs)
 	return
 	{
 		// Gradient split equally.
-		(inputs[0].Ones()/inputs[0].Size())*gradient
+		(inputs[0].Ones()/FP(inputs[0].Size()))*gradient
 	};
 }
 
@@ -42,7 +42,7 @@ NDArrays KoMean::OneDim_Backward(const NDArray& gradient,const NDArrays& inputs)
 	return 
 	{
 		// Gradient split equally along dimension of aggregation.
-		(inputs[0].Ones()/inputs[0].Shape()[_dim])*			// (1/count) *
+		(inputs[0].Ones()/FP(inputs[0].Shape()[_dim]))*		// (1/count) *
 			(_keepDims?gradient:gradient.Unsqueeze(_dim))	//		gradient.
 	};
 }

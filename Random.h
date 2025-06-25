@@ -49,12 +49,12 @@ public:
 
 class NormalDistribution
 {
-	std::random_device					_rd;
-    std::mt19937						_gen;
-	std::normal_distribution<double>	_rnd;
+	std::random_device				_rd;
+    std::mt19937					_gen;
+	std::normal_distribution<FP>	_rnd;
 
 public:
-	NormalDistribution(double mu,double sigma) :
+	NormalDistribution(FP mu,FP sigma) :
 		_gen(_rd()),
 		_rnd(mu,sigma)
 	{		

@@ -480,6 +480,8 @@ namespace
 					1,1,1
 				}))),"cube+cube");
 		}
+
+		if(false)	// Lost test data file.
 		{
 			// Each head has produced a contribution to the final gradient of x.
 			// These contributions must be summed, there for 3 for each each 1 from each of key, query, and value.
@@ -497,6 +499,8 @@ namespace
 			TensorPtr gx = Tensor::New(NDData::Load("E:\\Temp\\MHA_tok_emb_pos_emb.gradient.txt"));
 			Assert(dx->IsEqualTo(gx));
 		}
+
+		if(false)	// Lost test data file.
 		{
 			// Backward through 'x=tok_emb+pos_emb'.
 			TensorPtr tok_emb = Tensor::New(NDData::Load("E:\\Temp\\MHA_tok_emb.txt"),true);										// Input tok_emb.
@@ -587,7 +591,7 @@ namespace
 			TensorPtr y = Tensor::New(NDData::New({1},{3}));
 			TensorPtr z = x->CrossEntropy(y);
 			print(z);
-			Assert(z->IsEqualTo(Tensor::New(NDData::New({},{1.38629}))),"4x1");
+			Assert(z->IsEqualTo(Tensor::New(NDData::New({},{1.38629f}))),"4x1");
 		}
 
 		{
@@ -597,7 +601,7 @@ namespace
 			print(y->Shape());
 			TensorPtr z = x->CrossEntropy(y);
 			print(z);
-			Assert(z->IsEqualTo(Tensor::New(NDData::New({},{4.22416}))),"256x65");
+			Assert(z->IsEqualTo(Tensor::New(NDData::New({},{4.22416f}))),"256x65");
 			z->Backward();
 			print(x->Gradient()->Shape());
 			print(x->Gradient());
@@ -679,6 +683,7 @@ namespace
 				}))));
 		}
 
+		if(false)	// Lost test data files.
 		{
 			// Backward through 'out = wei@v' in each head.
 			const int num_heads = 4;
@@ -833,7 +838,7 @@ namespace
 			y->Backward();
 			TensorPtr xg = x->Gradient();
 			print(xg,"xg");
-			Assert(xg->IsEqualTo(Tensor::New(NDData::New({1,3},{0.333333,0.333333,0.333333}))));
+			Assert(xg->IsEqualTo(Tensor::New(NDData::New({1,3},{0.333333f,0.333333f,0.333333f}))));
 		}
 
 		{
@@ -845,7 +850,7 @@ namespace
 			y->Backward();
 			TensorPtr xg = x->Gradient();
 			print(xg,"xg");
-			Assert(xg->IsEqualTo(Tensor::New(NDData::New({1,3},{0.333333,0.333333,0.333333}))));
+			Assert(xg->IsEqualTo(Tensor::New(NDData::New({1,3},{0.333333f,0.333333f,0.333333f}))));
 		}
 
 		{
@@ -928,7 +933,7 @@ namespace
 				TensorPtr wei = Tensor::New(NDData::Load("E:\\Temp\\MHA_head_q_k_T_"+to_string(i)+".txt"),true);			// Input wei head[0]
 				const FP k_shape = 8.0;
 
-				TensorPtr y = wei->Mul(Tensor::New(NDData::New({},{pow(k_shape,-0.5)})));									// Test operation.
+				TensorPtr y = wei->Mul(Tensor::New(NDData::New({},{pow(k_shape,-0.5f)})));									// Test operation.
 
 				TensorPtr g = Tensor::New(NDData::Load("E:\\Temp\\MHA_head_wei_k_"+to_string(i)+".gradient.txt"));			// Gradient created by previous layer.
 				y->Backward(g,nullptr);

@@ -118,7 +118,7 @@ namespace
 	public:
 		// Computes the vector multiply and add for any length by iterating over unrolled vma.
 		//
-		static inline double Mul(const FP* row,const size_t row_stride,const FP* col,const size_t col_stride,const int length)
+		static inline FP Mul(const FP* row,const size_t row_stride,const FP* col,const size_t col_stride,const int length)
 		{
 			FP r = 0.0;
 			int i = 0;
@@ -432,32 +432,42 @@ class NDData : public std::enable_shared_from_this<NDData>
 	// Check for divergence.
 	void DebugRangeCheck() const
 	{
-		return;
 #ifdef _DEBUG
-		const FP threshold = 1.0e20;
+		static bool thrown = false;
+		if(thrown)
+			return;
+		const FP threshold = (FP)1.0e20;
 
-		if(_parent)
+		try
 		{
-			for(NDIterator iter=_shape;!iter.end();++iter)
+			if(_parent)
 			{
-				if(isnan((*this)[iter]))
-					throw "NAN";
-				if((*this)[iter]<-threshold||(*this)[iter]>threshold)
-					throw "Too big?";
+				for(NDIterator iter=_shape;!iter.end();++iter)
+				{
+					if(isnan((*this)[iter]))
+						throw "NAN";
+					if((*this)[iter]<-threshold||(*this)[iter]>threshold)
+						throw "Too big?";
+				}
+			}
+			else
+			{
+				const FP* const data = _data;
+				for(int i=0;i<_size;++i)
+				{
+					if(isinf(data[i]))
+						continue;
+					if(isnan(data[i]))
+						throw "NAN";
+					if(data[i]<-threshold||data[i]>threshold)
+						throw "Out of range.";
+				}
 			}
 		}
-		else
+		catch(...)
 		{
-			const FP* const data = _data;
-			for(int i=0;i<_size;++i)
-			{
-				if(isinf(data[i]))
-					continue;
-				if(isnan(data[i]))
-					throw "NAN";
-				if(data[i]<-threshold||data[i]>threshold)
-					throw "Too big?";
-			}
+			thrown = true;
+			throw;
 		}
 #endif
 	}
@@ -699,8 +709,12 @@ public:	// Constructors must be public to use make_shared.
 				{
 					// 'begin' to 'end' range.
 					int begin = *j;
-					if(begin<0)
+					if(begin<0) // Relative to end of dimension.
+					{
 						begin += parent->_shape[i];
+						if(begin<0)
+							begin = 0;	// Slice before beginning, bound to beginning.
+					}
 					++j;
 					int end = *j;
 					if(end<=0)
@@ -857,7 +871,7 @@ public:
 	static NDArray Arrange(const int size)
 	{
 		std::vector<FP> sequence(size);
-		std::iota(sequence.begin(),sequence.end(),0);
+		std::iota(sequence.begin(),sequence.end(),FP(0));
 		return NDData::New({size},sequence);
 	}
 
@@ -1175,73 +1189,51 @@ public:
 	// 
 	NDArray ArgMax(const int dim) const
 	{
-		_ASSERT(HasNaturalStride());
+		// NOTE: The following code was copied from Mean as a starting point for ArgMax.
+		// Added because I needed Max for adding a correction bias to Softmax that was numerically unstable when using fp32.
+		_ASSERT(dim>=0&&dim<_shape.size());
 
-		// Only implemented for 2D array.
-		if(_shape.size()!=2)
-			throw IncompatibleShape();
+		// Create the new shape and result data where the aggregation dimension is 1.
+		NDShape newShape(_shape);
+		newShape[dim] = 1;
+		NDArray r = NDData::New(newShape);
 
-		/*
-		// Result has one value for each element of dim.
-		NDArray r = NDData::New({_shape[dim]},-1.0);
-
-		// ArgMax along dimension==dim.
-		NDShape shape(_shape);
-		shape[dim] = 1;
-		for(int i=0;i<_shape[dim];++i)
+		// Iterate reduced shape.
+		const int dimSize = _shape[dim];
+		for(NDIterator2 iter=r->Iter();!iter.end();++iter)
 		{
-			// Iterate dimensions!=dim.
-			NDShape argMax(shape);
-			NDIterator iter = shape;
-			NDShape index = iter;
-			index[dim] = i;
-			FP maxValue = (*this)[index];
-			++iter;
-			for(;!iter.end();++iter)
+			// ArgMax along the aggregation dimension.
+			NDShape indices(iter);
+			const std::initializer_list<int> index(indices.data(),indices.data()+indices.size());
+					
+			// Assume first value.
+			int max_i = 0;
+			FP max_v = (*this)[index];
+
+			// Iterate remaining values.
+			for(int i=0;i<dimSize;++i)
 			{
-				NDShape index = iter;
-				index[dim] = i;
-				const FP value = (*this)[index];
-				if(value>maxValue)
+				indices[dim] = i;
+				const FP v = (*this)[index];
+				if(v>max_v)
 				{
-					r[i] = CSlice();
-					maxValue = value;
+					max_v = v;
+					max_i = i;
 				}
 			}
+
+			// Store index of max value.
+			*iter = FP(max_i);
 		}
-		*/
 
-		// Only implemented for dimension==1.
-		if(dim!=1)
-			throw InvalidDimension();
-
-		// Scan for the largest value along each row and returns a (rows,1) array of indexes.
-		const int rows = _shape[0];
-		const int cols = _shape[1];
-		const int rowStride = _stride[0];
-		const int colStride = _stride[1];
-
-		NDArray r = NDData::New({rows,1});
-
-		FP* rData = r->_data;
-		const FP* row = _data;
-		for(int i=0;i<rows;++i)
+		const bool keepDims = true;
+		if(!keepDims)
 		{
-			rData[i] = 0;
-			const FP* cell = row;
-			FP maxArg = *cell;
-			for(int j=1;j<cols;++j)
-			{
-				cell += colStride;
-				if(*cell>maxArg)
-				{
-					maxArg = *cell;
-					rData[i] = (FP)j;
-				}
-			}
-			row += rowStride;
+			newShape.erase(newShape.begin()+dim);
+			return r.Reshape(newShape);
 		}
-		return r;
+		else
+			return r;
 	}
 
 	// Elementwise inplace addition.
@@ -1692,13 +1684,13 @@ public:
 		if(size>0)
 		{
 			// Size of interval, depends on if the 'stop' value should be included or not.
-			const double interval = (stop-start)/(endPoint?size-1:size);
+			const FP interval = (stop-start)/(endPoint?size-1:size);
 
 			// Compute the Y value on the log curve for each X value evenly spaced by the interval.
 			FP* const yData = y->_data;
 			for(int i=0;i<size;++i)
 			{
-				const double x = start+(i*interval);
+				const FP x = start+(i*interval);
 				yData[i] = pow(base,x);
 			}
 		}
@@ -1735,25 +1727,43 @@ public:
 	//
 	NDArray Max(const int dim) const
 	{
-		_ASSERT(HasNaturalStride());
+		_ASSERT(dim>=0&&dim<_shape.size());
 
-		if(dim==1)
+		// Create the new shape and result data where the aggregation dimension is 1.
+		NDShape newShape(_shape);
+		newShape[dim] = 1;
+		NDArray r = NDData::New(newShape);
+
+		// Iterate reduced shape.
+		const int dimSize = _shape[dim];
+		for(NDIterator2 iter=r->Iter();!iter.end();++iter)
 		{
-			NDArray r = NDData::New({_shape[0],1});
-			for(int i=0;i<_shape[0];++i)
+			// Max along the aggregation dimension.
+			NDShape indices(iter);
+			const std::initializer_list<int> index(indices.data(),indices.data()+indices.size());
+					
+			// Assume first value, and iterate over the rest.
+			FP max_v = (*this)[index];
+			for(int i=0;i<dimSize;++i)
 			{
-				FP m = operator[]({i,0});
-				for(int j=1;j<_shape[1];++j)
-				{
-					if(operator[]({i,j})>m)
-						m = operator[]({i,j});
-				}
-				r[{i,0}] = m;
+				indices[dim] = i;
+				const FP v = (*this)[index];
+				if(v>max_v)
+					max_v = v;
 			}
-			return r;
+
+			// Store max value.
+			*iter = max_v;
+		}
+
+		const bool keepDims = true;
+		if(!keepDims)
+		{
+			newShape.erase(newShape.begin()+dim);
+			return r.Reshape(newShape);
 		}
 		else
-			throw NotImplemented();
+			return r;
 	}
 
 	// Compute mean for dimension, where that dimension collapses to 1 value.
@@ -1868,7 +1878,7 @@ public:
 		FP* const rData = _data;
 		FP ss = 0.0;
 		for(int i=0;i<_size;++i)
-			ss += pow(rData[i],2);
+			ss += pow(rData[i],FP(2));
 		return sqrt(ss);
 	}
 
@@ -2107,11 +2117,11 @@ public:
 	{
 		_ASSERT(HasNaturalStride());
 
-		const double mean = Mean(false)[{}];
-		double se = 0.0;
+		const FP mean = Mean(false)[{}];
+		FP se = 0.0;
 		for(int i=0;i<_size;++i)
-			se += pow(_data[i]-mean,2);
-		double mse = se/_size;
+			se += pow(_data[i]-mean,FP(2));
+		const FP mse = se/_size;
 
 		NDArray stddev = NDData::New({1},sqrt(mse));
 		return stddev;
@@ -2304,10 +2314,10 @@ public:
 	{
 		_ASSERT(HasNaturalStride());
 
-		const double mean = Mean(false)[{}];
-		double se = 0.0;
+		const FP mean = Mean(false)[{}];
+		FP se = 0.0;
 		for(int i=0;i<_size;++i)
-			se += pow(_data[i]-mean,2);
+			se += pow(_data[i]-mean,FP(2));
 		return NDData::New({},se/_size);
 	}
 
@@ -2317,7 +2327,7 @@ public:
 		NDArray tmp = this->Sub(Mean(dim,true));
 		tmp._data->_Pow(2.0);
 		NDArray r = tmp.Sum(dim,keepDim);
-		r._data->_Div(NDData::New({},_shape[dim]-correction));
+		r._data->_Div(NDData::New({},_shape[dim]-FP(correction)));
 		return r;
 	}
 
@@ -2451,7 +2461,7 @@ public:
 	{
 		std::stringstream ss;
 		ReadNumber(file,ss,c);
-		data.emplace_back(atof(ss.str().c_str()));
+		data.emplace_back(FP(atof(ss.str().c_str())));
 	}
 
 	static int ReadDelimitedValueOrEnd(std::fstream& file,std::vector<int>& shape,std::vector<FP>& data,char& c)
@@ -2705,7 +2715,7 @@ public:
 		for(int i=0;i<values;++i)
 		{
 			file>>line;
-			data.emplace_back(atof(line.c_str()));
+			data.emplace_back(FP(atof(line.c_str())));
 		}
 
 		file.close();
@@ -2736,7 +2746,7 @@ public:
 				if(pos!=std::string::npos||line.length()>0)
 				{
 					std::string value = line.substr(0,pos);
-					values.push_back(atof(value.c_str()));
+					values.push_back(FP(atof(value.c_str())));
 					if(i==1)
 						++j;
 					line = line.substr(pos+1);

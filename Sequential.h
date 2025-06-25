@@ -17,6 +17,11 @@ public:
 		_layers.insert(_layers.end(),layers);
 	}
 
+	void Add(const LayerPtr& layer)
+	{
+		_layers.emplace_back(layer);
+	}
+
 	const std::vector<LayerPtr> GetLayers() const override
 	{
 		return _layers;

@@ -29,6 +29,6 @@ NDArrays KoCrossEntropy::Backward(const NDArray& gradient,const NDArrays& inputs
 		// Differential WRT input is the activation of correct output -1 (see LSTM document you wrote for full math explanation!).
 		// Here softmaxOutput is the predicted p-dist over the outputs and targetDist is the identity matrix row for the correct output i.e. 1.
 		// The derivative is softmax(x)-target(x) and then divided by the number of samples to account for taking the mean.
-		gradient*((_softmax-_targetsOH)/_targetsOH.Shape()[0])
+		gradient*((_softmax-_targetsOH)/FP(_targetsOH.Shape()[0]))
 	};
 }

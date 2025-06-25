@@ -28,7 +28,7 @@ public:
 		_activation(activation)
 	{
 		// He initialisation.
-		const FP stdev = sqrt(2.0/nInputs);
+		const FP stdev = sqrt(FP(2.0)/FP(nInputs));
 		NDArray weight = NDData::RandN({nInputs,nOutputs})*stdev;
 		_weight = Tensor::New(weight,true);
 		_weight->Name(name+".weight");

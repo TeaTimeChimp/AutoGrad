@@ -16,7 +16,7 @@ public:
 	}
 
 	Embedding(const int vocabSize,const int embeddingSize,const std::string& name) :
-		_weight(Tensor::New(NDData::RandN({vocabSize,embeddingSize})*sqrt(2.0/vocabSize),true))	// He initialization.
+		_weight(Tensor::New(NDData::RandN({vocabSize,embeddingSize})*sqrt(FP(2.0)/FP(vocabSize)),true))	// He initialization.
 	{
 		_weight->Name(name+".weight");
 	}

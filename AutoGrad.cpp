@@ -38,7 +38,7 @@ int main()
 		TensorPtr x = Tensor::New(NDData::New({1,1},2),true);
 		TensorPtr y = Tensor::New(NDData::New({1,1},3),true);
 		MSELoss loss;
-		SGD optim({x,y},0.01);
+		SGD optim({x,y},FP(0.01));
 		for(int i=0;i<10;++i)
 		{
 			TensorPtr p = x->Mul(y);
@@ -80,7 +80,7 @@ int main()
 	*/
 
 	CrossEntropyLoss criterion;
-	SGD optim(model.GetParameters(),0.1);
+	SGD optim(model.GetParameters(),0.1f);
 
 	for(int i=0;i<10;++i)
 	{

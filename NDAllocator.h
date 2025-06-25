@@ -5,9 +5,9 @@
 
 class NDAllocator
 {
-	static const size_t MinAllationBit	= 4;
-	static const size_t MinAllocation	= 1ULL<<MinAllationBit;
-	static const size_t MaxAllocators	= 22;
+	static const size_t MinAllocationBit	= 4;
+	static const size_t MinAllocation		= 1ULL<<MinAllocationBit;
+	static const size_t MaxAllocators		= 32;
 
 	class Allocator
 	{
@@ -56,11 +56,11 @@ class NDAllocator
 	
 	Allocator& GetAllocator(const size_t size)
 	{
-		_ASSERT(size<=(1ULL<<(MaxAllocators+MinAllationBit-1)));
-		size_t msb = MinAllationBit;
+		_ASSERT(size<=(1ULL<<(MaxAllocators+MinAllocationBit-1)));
+		size_t msb = MinAllocationBit;
 		while((1ULL<<msb)<size)
 			++msb;
-		return _allocators[msb-MinAllationBit];
+		return _allocators[msb-MinAllocationBit];
 	}
 
 	struct BlockHeader
@@ -74,7 +74,7 @@ public:
 	NDAllocator()
 	{
 		for(int i=0;i<MaxAllocators;++i)
-			_allocators[i].Initialise(1ULL<<(MinAllationBit+i));
+			_allocators[i].Initialise(1ULL<<(MinAllocationBit+i));
 	}
 
 	~NDAllocator()
