@@ -643,7 +643,7 @@ public:	// Constructors must be public to use make_shared.
 		// Cast/copy data.
 		FP* p = _data;
 		for(diter d=dbegin;d!=dend;++d)
-			*p++ = (FP)*d;
+			*p++ = FP(*d);
 	}
 
 	// List shape and data vector.

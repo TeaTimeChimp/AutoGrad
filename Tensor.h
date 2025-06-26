@@ -38,10 +38,11 @@ class Tensor : public std::enable_shared_from_this<Tensor>
 	static inline std::atomic<int>	_nextId = 0;
 
 	const int				_id;
+	std::mutex              _lock;			// State protection mutex.
 	std::vector<TensorPtr>	_creators;		// Tensors used to create this tensor (probably should be encapsulated in KernelOp).
 	std::map<size_t,int>	_children;		// Tensors derived from this tensor (all need to be processed before this can backprop).
 	KernelPtr				_kernel;		// Kernal operation used to produce the data.
-	const bool				_autograd;		// Enable backprop on the and derived.
+	const bool				_autograd;		// Enable backprop on this and derived.
 
 	NDArray					_data;			// Data array.
 	
@@ -77,24 +78,13 @@ class Tensor : public std::enable_shared_from_this<Tensor>
 		return arrays;
 	}
 
-	void AddAsChild() const
+	void AddChild(const int childId)
 	{
-		// Add this as a child of it's creators.
-		//std::cout<<"[";
-		//bool first = true;
-		for(auto& c:_creators)
-		{
-//			if(first)
-	//			first = false;
-		//	else
-			//	std::cout<<",";
-			//std::cout<<c->_id;
-			if(c->_children.find(_id)==c->_children.end())
-				c->_children[_id] = 1;
-			else
-				c->_children[_id]++;
-		}
-		//std::cout<<"]="<<_id<<std::endl;
+		std::unique_lock<std::mutex> lock(_lock);	// Lock to protect children map.
+		if(_children.find(childId)==_children.end())
+			_children[childId] = 1;
+		else
+			_children[childId]++;
 	}
 
 	class P
@@ -102,6 +92,7 @@ class Tensor : public std::enable_shared_from_this<Tensor>
 	};
 
 public:
+	// Construct Tensor around given data.
 	template<class iter>
 	Tensor(const P&,const NDArray& data,bool autograd,const iter& begin,const iter& end) :
 		_id(NextId()),
@@ -113,19 +104,22 @@ public:
 			_creators.emplace_back(*i);
 
 		// Add this as a child of it's creators.
-		AddAsChild();
+		for(auto& c:_creators)
+			c->AddChild(_id);
 	}
 
+	// Construct Tensor from kernel operation.
 	template<class iter>
 	Tensor(const P&,const bool autograd,const iter& begin,const iter& end,const KernelPtr& kernel) :
 		_id(NextId()),
+		_creators(begin,end),
 		_kernel(kernel),
 		_autograd(autograd),
-		_creators(begin,end),
 		_data(kernel->Forward(Arrays(_creators)))
 	{
 		// Add this as a child of it's creators.
-		AddAsChild();
+		for(auto& c:_creators)
+			c->AddChild(_id);
 	}
 
 	// Added for CategoricalDistribution, need to create a tensor derived from a shape vector.

@@ -59,8 +59,8 @@ class NDThreadPool
             std::unique_lock<std::mutex> lk(_queueMutex);       // Take work lock.
             _queueCondition.wait(lk,[this,waitForWork]()        // Release lock and suspend this thread until notified. When notified this thread will own the lock again.
             {
-                return !waitForWork||!_work.empty()||_stop;}    // Don't enter wait if any of these conditions are true.
-            );     
+                return !waitForWork||!_work.empty()||_stop;     // Don't enter wait if any of these conditions are true.
+            });     
 
             // Check queue for work.
             if(!_work.empty())
