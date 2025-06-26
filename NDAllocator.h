@@ -11,11 +11,13 @@ class NDAllocator
 	class Allocator
 	{
 		size_t									_size;
+		size_t									_allocationCount;
 		concurrency::concurrent_queue<void*>	_allocations;
 
 	public:
 		Allocator() :
-			_size(0)
+			_size(0),
+			_allocationCount(0)
 		{
 		}
 
@@ -28,7 +30,10 @@ class NDAllocator
 		{
 			void* allocation = nullptr;
 			while(_allocations.try_pop(allocation))
-				free(allocation);
+			{
+				_aligned_free(allocation);
+				--_allocationCount;
+			}
 			_size = 0;
 		}
 
@@ -36,7 +41,10 @@ class NDAllocator
         {
             void* allocation = nullptr;
             if(!_allocations.try_pop(allocation))
+			{
                 allocation = _aligned_malloc(_size,64);
+				++_allocationCount;
+			}
             return allocation;
         }
 

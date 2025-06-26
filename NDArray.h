@@ -183,6 +183,7 @@ public:
 	inline NDArray			operator[](const NDArray& indices) const;
 
 	inline void				_Attach(const NDArray& v);
+	inline void				_Reset();
 
 	inline int				ArgMax() const;
 	inline NDArray			ArgMax(const int dim) const;
@@ -2781,6 +2782,11 @@ NDArray::NDArray(const FP v) :
 void NDArray::_Attach(const NDArray& v)
 {
 	_data = v._data;
+}
+
+void NDArray::_Reset()
+{
+	_data.reset();
 }
 
 void NDArray::operator=(const NDArray& v)

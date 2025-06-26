@@ -33,18 +33,18 @@
 
 
 typedef std::shared_ptr<class Tensor> TensorPtr;
-class Tensor : public std::enable_shared_from_this<Tensor>
+class Tensor : public std::enable_shared_from_this<class Tensor>
 {
 	static inline std::atomic<int>	_nextId = 0;
 
-	const int				_id;
+	const int				_id;			// Unique ID for this tensor, used to identify it in the children map.
 	std::mutex              _lock;			// State protection mutex.
 	std::vector<TensorPtr>	_creators;		// Tensors used to create this tensor (probably should be encapsulated in KernelOp).
 	std::map<size_t,int>	_children;		// Tensors derived from this tensor (all need to be processed before this can backprop).
 	KernelPtr				_kernel;		// Kernal operation used to produce the data.
 	const bool				_autograd;		// Enable backprop on this and derived.
 
-	NDArray					_data;			// Data array.
+	NDArray					_data;			// N-Dimensional data array.
 	
 	TensorPtr				_gradient;		// Gradient of loss with respect to this.
 	
@@ -228,8 +228,13 @@ public:
 			{
 				// First/only gradient passed back.
 				_gradient = gradient;
-				_momentum = Tensor::New(_gradient->_data.Zeros());
-				_momentum2 = Tensor::New(_gradient->_data.Zeros());
+
+				// Only need momentum for learnable model parameters - without any other identifier these don't have creators.
+				if(_creators.size()==0)
+				{
+					_momentum = Tensor::New(_gradient->_data.Zeros());
+					_momentum2 = Tensor::New(_gradient->_data.Zeros());
+				}
 			}
 			else
 			{
@@ -245,10 +250,20 @@ public:
 			// Backprop to tensor(s) used to create this tensor if gradient is ready.
 			if(_creators.size()>0&&AllChildrenGradsAccountedFor())
 			{
-				NDArrays inputs;
-				for(auto& creator:_creators)
-					inputs.emplace_back(creator->_data);
+				// For some reason kernel operators take NDArrays as input, so convert creators (Tensors) to NDArrays.
+				const NDArrays inputs = Arrays(_creators);
+
+				// Compute gradients for each creator.
 				const NDArrays gradients = _kernel->Backward(_gradient->_data,inputs);
+
+				// Release the gradient for this tensor, it has been passed back to the creators.
+				_gradient.reset();
+
+				// Reset data to release memory, it is no longer needed, this was an intermediate result.
+				if(_children.size()>0)
+					_data._Reset();		
+
+				// Pass gradients back to each creator.
 				for(size_t i=0;i<_creators.size();++i)
 					_creators[i]->Backward(Tensor::New(gradients[i]),Self());
 			}
