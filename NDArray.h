@@ -2057,8 +2057,8 @@ public:
 		return Reshape(shape.begin(),shape.end());
 	}
 
-	// Scatter elements from 'source' into 'result' positions specified by 'indices'.
-	// (reciprocal of Gather)
+	// Scatter elements from 'source' into 'result' positions specified by 'indices', reciprocal of 'Gather'.
+	// The data in this object does not participate in the operation, only the shape.
 	// 
 	// NOTE! This differs from torch whereby this accumulates values as it is used for gradients.
 	//

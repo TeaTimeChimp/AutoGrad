@@ -26,6 +26,7 @@ NDArrays KoMax::Backward(const NDArray& gradient,const NDArrays& inputs)
 	_ASSERT_EXPR(inputs.size()==1,"KoMax::Backward: inputs.size() must be 1");	
 	return
 	{
-		inputs[0].Scatter(_dim,_argmax,gradient)	// Multiply the input by the gradient, but only where the input was the maximum.
+		// No differentiation required, pass gradient where the input was the maximum.
+		inputs[0].Scatter(_dim,_argmax,gradient)
 	};
 }

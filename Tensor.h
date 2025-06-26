@@ -35,7 +35,7 @@
 typedef std::shared_ptr<class Tensor> TensorPtr;
 class Tensor : public std::enable_shared_from_this<Tensor>
 {
-	static inline int		_nextId = 0;
+	static inline std::atomic<int>	_nextId = 0;
 
 	const int				_id;
 	std::vector<TensorPtr>	_creators;		// Tensors used to create this tensor (probably should be encapsulated in KernelOp).
