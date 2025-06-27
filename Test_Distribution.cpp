@@ -24,7 +24,7 @@ void Test_Distribution()
 	}
 
 	{
-		TensorPtr probs = Tensor::New(NDData::New({2,4},{0.1,0.4,0.2,0.3,0.3,0.2,0.4,0.1}));
+		TensorPtr probs = Tensor::New(NDData::New({2,4},{0.1f,0.4f,0.2f,0.3f,0.3f,0.2f,0.4f,0.1f}));
 		probs->Print();
 
 		CategoricalDistribution dist(probs,false);

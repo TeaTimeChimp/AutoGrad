@@ -490,12 +490,13 @@ namespace
 					1,2,
 					3,4
 				});
+			print(x,"x");
 
 			NDArray y = p.Slice({{},{0,3}});
-			print(y);
+			print(y,"y");
 
 			NDArray z = x.Dot(y);
-			print(z);
+			print(z,"z");
 
 			Assert(z.IsEqualTo(NDData::New({2,3},
 				{

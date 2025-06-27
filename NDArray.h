@@ -1334,7 +1334,7 @@ public:
 	//  a11 a12   b11 b12   a11*b11+a12*b21 a11*b12+a12*b22
 	//  a21 a22 . b21 b22 = a21*b11+a22*b21 a12*b12+a22*b22
 	//
-	NDArray MatMul(const NDArray& v) const
+	NDArray MatMul_v1(const NDArray& v) const
 	{
 		// Both arrays must be 2D.
 		if(_shape.size()!=2||v->_shape.size()!=2)
@@ -1422,6 +1422,264 @@ public:
 		return r;
 	}
 
+	static const int tile_size = 32;	// Tile size for matrix multiplication.
+
+	static void add_from_whole_tile(
+		const float* const tile,
+		float* const dst, const int dst_row_stride, const int dst_col_stride,
+		const int dst_i, const int dst_j)
+	{
+		float* const dst_begin = dst+(dst_row_stride*dst_i)+(dst_col_stride*dst_j);
+		float* dst_row_begin = dst_begin;
+		for(int i=0;i<tile_size;++i)
+		{
+			float* dst_value = dst_row_begin;
+			for(int j=0;j<tile_size;++j)
+			{
+				*dst_value += tile[i*tile_size+j];
+				dst_value += dst_col_stride;
+			}
+			dst_row_begin += dst_row_stride;
+		}
+	}
+
+	static void add_from_partial_tile(
+		const float* const tile,
+		float* const dst, const int dst_row_stride, const int dst_col_stride,
+		const int dst_i, const int dst_j,
+		const int rows, const int cols)
+	{
+		float* const dst_begin = dst+(dst_row_stride*dst_i)+(dst_col_stride*dst_j);	
+		float* dst_row_begin = dst_begin;
+		for(int i=0;i<rows;++i)
+		{
+			float* dst_value = dst_row_begin;
+			for(int j=0;j<cols;++j)
+			{
+				*dst_value += tile [i*tile_size+j];
+				dst_value += dst_col_stride;
+			}
+			dst_row_begin += dst_row_stride;
+		}
+	}
+
+	static void add_from_tile(
+		const float* const tile,
+		float* const dst, const int dst_rows, const int dst_cols, const int dst_row_stride, const int dst_col_stride,
+		const int dst_i, const int dst_j)
+	{
+		// Assume whole tile fits in the source and destination matrices.
+		int rows = tile_size;
+		int cols = tile_size;
+
+		// Clip the tile to the destination matrix.
+		if(dst_i+tile_size>dst_rows)
+			rows = dst_rows-dst_i;
+		if(dst_j+tile_size>dst_cols)
+			cols = dst_cols-dst_j;
+
+		// Use the whole tile if it fits, otherwise use a partial tile.
+		if(rows==tile_size&&cols==tile_size)
+			add_from_whole_tile(
+				tile,
+				dst, dst_row_stride, dst_col_stride,
+				dst_i,dst_j);
+		else
+			add_from_partial_tile(
+				tile,
+				dst, dst_row_stride, dst_col_stride,
+				dst_i,dst_j,
+				rows,cols);
+	}
+
+	static void copy_whole_tile_row_major(
+		float* const tile,
+		const float* const src,const int src_row_stride, const int src_col_stride,const int src_i,const int src_j)
+	{
+		const float* const src_begin = src+(src_row_stride*src_i)+(src_col_stride*src_j);	
+		const float* src_row_begin = src_begin;
+		for(int i=0;i<tile_size;++i)
+		{
+			const float* src_value = src_row_begin;
+			for(int j=0;j<tile_size;++j)
+			{
+				tile[i*tile_size+j] = *src_value;
+				src_value += src_col_stride;
+			}
+			src_row_begin += src_row_stride;
+		}
+	}
+
+	static void copy_whole_tile_col_major(
+		float* const tile,
+		const float* const src,const int src_row_stride, const int src_col_stride,const int src_i,const int src_j)
+	{
+		const float* const src_begin = src+(src_row_stride*src_i)+(src_col_stride*src_j);	
+		const float* src_col_begin = src_begin;
+		for(int j=0;j<tile_size;++j)
+		{
+			const float* src_value = src_col_begin;
+			for(int i=0;i<tile_size;++i)
+			{
+				tile[i*tile_size+j] = *src_value;
+				src_value += src_row_stride;
+			}
+			src_col_begin += src_col_stride;
+		}
+	}
+
+	static void copy_whole_tile(
+		float* const tile,
+		const float* const src,const int src_row_stride, const int src_col_stride,const int src_i,const int src_j)
+	{
+		if(src_col_stride<src_row_stride)
+			copy_whole_tile_row_major(
+				tile,
+				src,src_row_stride,src_col_stride,src_i,src_j);
+		else
+			copy_whole_tile_col_major(
+				tile,
+				src,src_row_stride,src_col_stride,src_i,src_j);
+	}
+
+	static void copy_partial_tile(
+		float* const tile,
+		const float* const src,const int src_row_stride,const int src_col_stride,const int src_i,const int src_j,
+		const int rows, const int cols)
+	{
+		memset(tile,0,sizeof(float)*tile_size*tile_size);
+		const float* const src_begin = src+(src_row_stride*src_i)+(src_col_stride*src_j);
+		const float* src_row_begin = src_begin;
+		for(int i=0;i<rows;++i)
+		{
+			const float* src_value = src_row_begin;
+			for(int j=0;j<cols;++j)
+			{
+				tile[i*tile_size+j] = *src_value;
+				src_value += src_col_stride;
+			}
+			src_row_begin += src_row_stride;
+		}
+	}
+
+
+	static void copy_to_tile(
+		float* const tile,
+		const float* const src, const int src_rows, const int src_cols, const int src_row_stride, const int src_col_stride,
+		const int src_i, const int src_j)
+	{
+		// Assume whole tile is to be copied from the source matrix.
+		int rows = tile_size;
+		int cols = tile_size;
+
+		// Clip the copy to the source matrix.
+		if(src_i+tile_size>src_rows)
+			rows = src_rows-src_i;
+		if(src_j+tile_size>src_cols)
+			cols = src_cols-src_j;
+
+		// Use the whole tile if it fits, otherwise use a partial tile.
+		if(rows==tile_size&&cols==tile_size)
+			copy_whole_tile(
+				tile,
+				src,src_row_stride,src_col_stride,src_i,src_j);
+		else
+			copy_partial_tile(
+				tile,
+				src, src_row_stride, src_col_stride,src_i,src_j,
+				rows,cols);
+	}
+
+	static void matmul_tile(const float* const a,const float* const b,float* const c)
+	{
+		for(int i=0;i<tile_size;++i)
+		{
+			for(int j=0;j<tile_size;++j)
+			{
+				float acc = 0.0;
+				for(int k=0;k<tile_size;++k)
+					acc += a[i*tile_size+k] * b[k*tile_size+j];
+				c[i*tile_size+j] = acc;
+			}
+		}
+	}
+
+	NDArray MatMul(const NDArray& v) const
+	{
+		// Both arrays must be 2D.
+		if(_shape.size()!=2||v->_shape.size()!=2)
+			throw IncompatibleShape();
+
+		// Cache matrix dimensions.
+		const int aRows = _shape[0];
+		const int aCols = _shape[1];
+		const int aRowStride = _stride[0];
+		const int aColStride = _stride[1];
+		const int bRows = v->_shape[0];
+		const int bCols = v->_shape[1];
+		const int bRowStride = v->_stride[0];
+		const int bColStride = v->_stride[1];
+
+		// LHS columns must equal RHS rows.
+		if(aCols!=bRows)
+			throw IncompatibleShape();
+
+		// Create output shape.
+		NDShape shape(_shape);
+		shape[1] = bCols;
+		NDArray r = NDData::New(shape,0.0);
+		const int cRows = r->_shape[0];
+		const int cCols = r->_shape[1];
+		const int cRowStride = r->_stride[0];
+		const int cColStride = r->_stride[1];
+
+		// Dimensions of the output matrix in tile
+		const int tile_rows = ((aRows-1)/tile_size)+1;
+		const int tile_cols = ((bCols-1)/tile_size)+1;
+		const int inner_tiles = ((aCols-1)/tile_size)+1;
+		
+		// Iterate over the tiles of the output matrix.
+		//for(int tile_row=0;tile_row<tile_rows;++tile_row)
+		pool.foreach(0,tile_rows,[&](const int tile_row)
+		{
+			// Reserve tile buffers per thread - these are held in L1 cache.
+			float x[tile_size][tile_size];
+			float y[tile_size][tile_size];
+			float z[tile_size][tile_size];
+			for(int tile_col=0;tile_col<tile_cols;++tile_col)
+			{
+				// Compute the output tile.
+				for(int p=0;p<inner_tiles;++p)
+				{
+					// Copy p-th inner tile from tile row a.
+					copy_to_tile(
+						&x[0][0],									// Destination tile matrix.
+						_data,aRows,aCols,aRowStride,aColStride,	// Source matrix description.
+						tile_row*tile_size,p*tile_size);			// Source tile row and column.
+
+					// Copy p-th inner tile from tile column b.
+					copy_to_tile(
+						&y[0][0],									// Destination tile matrix.
+						v->_data,bRows,bCols,bRowStride,bColStride,	// Source matrix description.
+						p*tile_size,tile_col*tile_size);			// Source tile row and column.
+
+					// Multiply the two tiles.
+					matmul_tile(&x[0][0],&y[0][0],&z[0][0]);
+
+					// Add the result tile to the output matrix.
+					add_from_tile(
+						&z[0][0],									// Source tile matrix.
+						r->_data,cRows,cCols,cRowStride,cColStride,	// Destination matrix description.
+						tile_row*tile_size,tile_col*tile_size);		// Destination tile row and column.
+				}
+			}
+		});
+
+		r->DebugRangeCheck();
+		return r;
+	}
+
+
 	// Dot product for n-dimensional arrays.
 	// 
 	//		A(i,...,k) @ B(k,j) = C(i,...,j)
@@ -1471,7 +1729,7 @@ public:
 				const NDArrayC v = sb->MatMul(vb);			// 2D @ 2D.
 				print("=");
 				print(v);
-				r->Slice({{b}}) = v;							// Assign 2D result.
+				r->Slice({{b}}) = v;						// Assign 2D result.
 				*/
 				r->Slice({{b}}) = self->Slice({{b}})->MatMul(v.Slice({{b}}));
 			});/*,concurrency::static_partitioner());*/
