@@ -1,4 +1,4 @@
 #include "NDThreadPool.h"
 
 
-NDThreadPool pool;
+NDThreadPool NDThreadPool::_pool;

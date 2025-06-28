@@ -1367,7 +1367,7 @@ public:
 			//std::for_each(std::execution::par_unseq,rng.begin(),rng.end(),[this,aCols,bCols,bRows,aColStride,bRowStride,&v,&r] (const int i)	// For each row in A...
 			//concurrency::affinity_partitioner ap;
 			//concurrency::parallel_for(0,aRows,[this,aCols,bCols,bRows,aColStride,bRowStride,&v,&r] (const int i)	// For each row in A...
-			pool.foreach(0,aRows,[this,aCols,bCols,bRows,aColStride,bRowStride,&v,&r](const int i)
+			NDThreadPool::ForEach(0,aRows,[this,aCols,bCols,bRows,aColStride,bRowStride,&v,&r](const int i)
 			{
 				const FP* aRow = DataPtr({i});					// First cell of row i in A.
 				FP* cCell = r->DataPtr({i});					// First cell of row i in C.
@@ -1639,41 +1639,51 @@ public:
 		const int inner_tiles = ((aCols-1)/tile_size)+1;
 		
 		// Iterate over the tiles of the output matrix.
-		//for(int tile_row=0;tile_row<tile_rows;++tile_row)
-		pool.foreach(0,tile_rows,[&](const int tile_row)
+		NDThreadPool::TaskGroup taskGroup;
+		for(int tile_row=0;tile_row<tile_rows;++tile_row)
 		{
-			// Reserve tile buffers per thread - these are held in L1 cache.
-			float x[tile_size][tile_size];
-			float y[tile_size][tile_size];
-			float z[tile_size][tile_size];
 			for(int tile_col=0;tile_col<tile_cols;++tile_col)
 			{
-				// Compute the output tile.
-				for(int p=0;p<inner_tiles;++p)
+				// Compute the output tile - run independent output tile as task - better parallelism than parallel for.
+				taskGroup.Run([this,&v,&r,
+					aRows,aCols,aRowStride,aColStride,
+					bRows,bCols,bRowStride,bColStride,
+					cRows,cCols,cRowStride,cColStride,
+					tile_row,tile_col,inner_tiles]()
 				{
-					// Copy p-th inner tile from tile row a.
-					copy_to_tile(
-						&x[0][0],									// Destination tile matrix.
-						_data,aRows,aCols,aRowStride,aColStride,	// Source matrix description.
-						tile_row*tile_size,p*tile_size);			// Source tile row and column.
+					// Reserve tile buffers per thread - these are held in L1 cache.
+					float x[tile_size][tile_size];
+					float y[tile_size][tile_size];
+					float z[tile_size][tile_size];
+					for(int p=0;p<inner_tiles;++p)
+					{
+						// Copy p-th inner tile from tile row a.
+						copy_to_tile(
+							&x[0][0],									// Destination tile matrix.
+							_data,aRows,aCols,aRowStride,aColStride,	// Source matrix description.
+							tile_row*tile_size,p*tile_size);			// Source tile row and column.
 
-					// Copy p-th inner tile from tile column b.
-					copy_to_tile(
-						&y[0][0],									// Destination tile matrix.
-						v->_data,bRows,bCols,bRowStride,bColStride,	// Source matrix description.
-						p*tile_size,tile_col*tile_size);			// Source tile row and column.
+						// Copy p-th inner tile from tile column b.
+						copy_to_tile(
+							&y[0][0],									// Destination tile matrix.
+							v->_data,bRows,bCols,bRowStride,bColStride,	// Source matrix description.
+							p*tile_size,tile_col*tile_size);			// Source tile row and column.
 
-					// Multiply the two tiles.
-					matmul_tile(&x[0][0],&y[0][0],&z[0][0]);
+						// Multiply the two tiles.
+						matmul_tile(&x[0][0],&y[0][0],&z[0][0]);
 
-					// Add the result tile to the output matrix.
-					add_from_tile(
-						&z[0][0],									// Source tile matrix.
-						r->_data,cRows,cCols,cRowStride,cColStride,	// Destination matrix description.
-						tile_row*tile_size,tile_col*tile_size);		// Destination tile row and column.
-				}
+						// Add the result tile to the output matrix.
+						add_from_tile(
+							&z[0][0],									// Source tile matrix.
+							r->_data,cRows,cCols,cRowStride,cColStride,	// Destination matrix description.
+							tile_row*tile_size,tile_col*tile_size);		// Destination tile row and column.
+					}
+				});
 			}
-		});
+		}
+
+		// Wait for all tasks to complete.
+		taskGroup.Wait();
 
 		r->DebugRangeCheck();
 		return r;
@@ -1717,7 +1727,7 @@ public:
 			//std::for_each(std::execution::par_unseq,rng.begin(),rng.end(),[&v,&self,&r](const int b)
 			//concurrency::affinity_partitioner ap;
 			//concurrency::parallel_for(0,v->_shape[0],[&v,&self,&r](const int b)
-			pool.foreach(0,v->_shape[0],[&v,&self,&r](const int b)
+			NDThreadPool::ForEach(0,v->_shape[0],[&v,&self,&r](const int b)
 			{
 				/*
 				const NDArrayC vb = v.Slice({{b}});			// 2D slice of v.

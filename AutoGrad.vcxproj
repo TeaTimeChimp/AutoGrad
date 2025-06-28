@@ -193,6 +193,7 @@
     <ClCompile Include="Test_Embedding.cpp" />
     <ClCompile Include="Test_Linear.cpp" />
     <ClCompile Include="Test_NDArray.cpp" />
+    <ClCompile Include="Test_NDThreadPool.cpp" />
     <ClCompile Include="Test_Tensor.cpp" />
     <ClCompile Include="Tools.cpp" />
   </ItemGroup>
@@ -252,6 +253,7 @@
     <ClInclude Include="Test_Embedding.h" />
     <ClInclude Include="Test_Linear.h" />
     <ClInclude Include="Test_NDArray.h" />
+    <ClInclude Include="Test_NDThreadPool.h" />
     <ClInclude Include="Test_Tensor.h" />
     <ClInclude Include="Tools.h" />
   </ItemGroup>

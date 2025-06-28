@@ -6,6 +6,7 @@
 #include "Test_Matrix.h"
 #include "Test_NDArray.h"
 #include "Test_Tensor.h"
+#include "Test_NDThreadPool.h"
 
 
 using namespace std;
@@ -59,6 +60,7 @@ void print(const NDShape& v)
 
 void Test()
 {
+	Test_NDThreadPool();
 	Test_NDArray();
 	Test_Tensor();
 	Test_Linear();

@@ -1095,12 +1095,12 @@ void Test_Tensor()
 		cout<<"repeat_0: output."<<endl;
 		TensorPtr y = x->Repeat(0,3);	// Make column 3 times longer.
 		y->Print();
-		Assert(y->Data().IsEqualTo(NDData::New({12,1},{0.0,0.0,0.0,0.1,0.1,0.1,0.2,0.2,0.2,0.3,0.3,0.3})),"expand");
+		Assert(y->Data().IsEqualTo(NDData::New({12,1},{0.0f,0.0f,0.0f,0.1f,0.1f,0.1f,0.2f,0.2f,0.2f,0.3f,0.3f,0.3f})),"expand");
 	}
 
 	{
 		cout<<"repeat_1"<<endl;
-		TensorPtr x = Tensor::New(NDData::New({1,1},{0.1}),true);	// Scalar.
+		TensorPtr x = Tensor::New(NDData::New({1,1},{0.1f}),true);	// Scalar.
 		x->Print();
 		TensorPtr y = x->Repeat(1,3);	// Copy 3 times as columns.
 		y->Print();

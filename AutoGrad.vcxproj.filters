@@ -147,6 +147,9 @@
     <ClCompile Include="KoMax.cpp">
       <Filter>Source Files\Kernels</Filter>
     </ClCompile>
+    <ClCompile Include="Test_NDThreadPool.cpp">
+      <Filter>Source Files\Test</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Layer.h">
@@ -319,6 +322,9 @@
     </ClInclude>
     <ClInclude Include="KoMax.h">
       <Filter>Header Files\Kernels</Filter>
+    </ClInclude>
+    <ClInclude Include="Test_NDThreadPool.h">
+      <Filter>Header Files\Test</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
