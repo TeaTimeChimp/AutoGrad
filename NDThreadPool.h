@@ -58,11 +58,10 @@ public:
         {
             // Decrement task group remaining task counter and notify control thread when complete.
             std::unique_lock<std::mutex> lk(_remainingTasksMutex);
+
+			// If all tasks are complete then notify the waiting thread.
             if(--_remainingTasks==0)
-            {
-                lk.unlock();    // Release control lock (before notify).
-                _remainingTasksCondition.notify_one();
-            }
+				_remainingTasksCondition.notify_one();
         }
         
 
