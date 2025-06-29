@@ -4,6 +4,7 @@
 #include "Exceptions.h"
 #include "NDAllocator.h"
 #include "NDThreadPool.h"
+#include "TiledMatMul.h"
 #include <ppl.h>
 #include <sstream>
 #include <fstream>
@@ -63,77 +64,6 @@
 class NDData;
 typedef std::shared_ptr<NDData>			NDDataPtr;
 typedef std::shared_ptr<const NDData>	NDDataPtrC;
-
-
-namespace
-{
-	class Vec
-	{
-		// Instantiate the vma template for loop counter 0 through maxmm (64 is where the compiler stops unrolling the vma).
-		static const size_t MaxVmUnroll = 64;
-
-		// Vector of function pointers for each unrollded loop count.
-		static void (*_mul[MaxVmUnroll+1])(const FP* const,const size_t,const FP* const,size_t,FP&);
-
-		// Vector multiplication template.
-		template<size_t i>
-		class VectorMultiplyN
-		{
-			const VectorMultiplyN<i-1> x;   // Recursively instantiate template for loop count of one less.
-
-			// Vector multiply and add - the compiler will unroll this loop because the counter is known at compile time.
-			//
-			template<size_t count>
-			static void Multiply(const FP* const row,const size_t row_stride,const FP* const col,const size_t col_stride,FP& r)
-			{
-				for(size_t i=0;i<count;++i)
-					r += row[i*row_stride]*col[i*col_stride];
-			}
-
-		public:
-			VectorMultiplyN()
-			{        
-				Vec::_mul[i] = Multiply<i>; // Assign function pointer to loop counter slot.
-			}
-		};
-
-		// Specialization to stop loop counter at 0.
-		//
-		template<>
-		class VectorMultiplyN<0>
-		{
-			static void EmptyVectorMultiply(const FP* const,const size_t,const FP* const,const size_t,FP&)
-			{
-				// Zero length vectors, nothing to do.
-			}
-
-		public:
-			VectorMultiplyN()
-			{        
-				Vec::_mul[0] = EmptyVectorMultiply;  // Assign empty vector multiplication to zeroth slot.
-			}
-		};
-		static VectorMultiplyN<MaxVmUnroll> _vmo;
-
-	public:
-		// Computes the vector multiply and add for any length by iterating over unrolled vma.
-		//
-		static inline FP Mul(const FP* row,const size_t row_stride,const FP* col,const size_t col_stride,const int length)
-		{
-			FP r = 0.0;
-			int i = 0;
-			while(length-i>=MaxVmUnroll)
-			{
-				_mul[MaxVmUnroll](row+i*row_stride,row_stride,col+i*col_stride,col_stride,r);
-				i += MaxVmUnroll;
-			} 
-			_mul[length-i](row+i*row_stride,row_stride,col+i*col_stride,col_stride,r);
-			return r;
-		}
-	};
-	void (*Vec::_mul[MaxVmUnroll+1])(const FP* const,const size_t,const FP* const,size_t,FP&);
-	Vec::VectorMultiplyN<Vec::MaxVmUnroll> Vec::_vmo;
-};
 
 
 // Reference class that can be used with overloaded operators so that the implementation of Tensor looks cleaner.
@@ -1327,6 +1257,7 @@ public:
 		return r;
 	}
 
+
 	// Matrix multiplication.
 	//
 	// Sum of row*column a(ij).b(xy)=c(iy) where j=x...
@@ -1334,276 +1265,6 @@ public:
 	//  a11 a12   b11 b12   a11*b11+a12*b21 a11*b12+a12*b22
 	//  a21 a22 . b21 b22 = a21*b11+a22*b21 a12*b12+a22*b22
 	//
-	NDArray MatMul_v1(const NDArray& v) const
-	{
-		// Both arrays must be 2D.
-		if(_shape.size()!=2||v->_shape.size()!=2)
-			throw IncompatibleShape();
-
-		// Cache matrix dimensions.
-		const int aRows = _shape[0];
-		const int aCols = _shape[1];
-		const int aRowStride = _stride[0];
-		const int aColStride = _stride[1];
-		const int bRows = v->_shape[0];
-		const int bCols = v->_shape[1];
-		const int bRowStride = v->_stride[0];
-		const int bColStride = v->_stride[1];
-
-		// LHS columns must equal RHS rows.
-		if(aCols!=bRows)
-			throw IncompatibleShape();
-
-		// Create output shape.
-		NDShape shape(_shape);
-		shape[1] = bCols;
-		NDArray r = NDData::New(shape,0.0);
-
-		if(aRows>1&&aCols*sizeof(FP)>=128)	// Task per LHS row, must be at least a cache line in size to avoid false sharing.
-		{
-			// Multi-threaded dot product (parallel on row of A e.g. batch samples).
-			//for(int i=0;i<aRows;++i)
-			//const auto rng = std::views::iota(0,aRows);
-			//std::for_each(std::execution::par_unseq,rng.begin(),rng.end(),[this,aCols,bCols,bRows,aColStride,bRowStride,&v,&r] (const int i)	// For each row in A...
-			//concurrency::affinity_partitioner ap;
-			//concurrency::parallel_for(0,aRows,[this,aCols,bCols,bRows,aColStride,bRowStride,&v,&r] (const int i)	// For each row in A...
-			NDThreadPool::ForEach(0,aRows,[this,aCols,bCols,bRows,aColStride,bRowStride,&v,&r](const int i)
-			{
-				const FP* aRow = DataPtr({i});					// First cell of row i in A.
-				FP* cCell = r->DataPtr({i});					// First cell of row i in C.
-				for(int j=0;j<bCols;++j)						// For each column in B...
-				{
-					*cCell++ = Vec::Mul(aRow,aColStride,v->DataPtr({0,j}),bRowStride,bRows);
-					/*
-					const FP* aCell = aRow;							// First cell of row i in A.
-					const FP* bCell = v->DataPtr({0,j});			// First cell of column j in B.
-					FP cell = 0.0;
-					for(int k=0;k<bRows;++k)						// For each value in row of A and column of B...
-					{
-						cell += *aCell * *bCell;						// Sum of product of A and B.
-						aCell += aColStride;							// Next value in row of A.
-						bCell += bRowStride;							// Next value in column of B.
-					}
-					*cCell++ = cell;								// Store C(i,...,j)
-					*/
-				}
-			}/*,ap*/);
-		}
-		else
-		{	
-			// Single-thread matrix multiple.
-			FP* cCell = r->_data;								// First cell of C.
-			const FP* aRow = _data;								// First cell of first row in A.
-			for(int i=0;i<aRows;++i)							// For each row in A...
-			{				
-				const FP* bCol = v->_data;							// First cell of first column in B.
-				for(int j=0;j<bCols;++j)								// For each column in B...
-				{
-					*cCell++ = Vec::Mul(aRow,aColStride,bCol+j*bColStride,bRowStride,bRows);
-					/*
-					const FP* aCell = aRow;									// First cell of row i in A.
-					const FP* bCell = bCol;									// First cell of column j in B.
-					FP cell = 0.0;
-					for(int k=0;k<bRows;++k)								// For each value in row of A and column of B...
-					{
-						cell += *aCell * *bCell;								// Sum product of A and B.
-						aCell += aColStride;									// Next value in row of A.
-						bCell += bRowStride;									// Next value in column of B.
-					}
-					*cCell++ = cell;										// Store C(i,j)
-					bCol += bColStride;										// Next column in B.
-					*/
-				}
-				aRow += aRowStride;										// First cell of next row in A.
-			}
-		}
-
-		r->DebugRangeCheck();
-		return r;
-	}
-
-	static const int tile_size = 32;	// Tile size for matrix multiplication.
-
-	static void add_from_whole_tile(
-		const float* const tile,
-		float* const dst, const int dst_row_stride, const int dst_col_stride,
-		const int dst_i, const int dst_j)
-	{
-		float* const dst_begin = dst+(dst_row_stride*dst_i)+(dst_col_stride*dst_j);
-		float* dst_row_begin = dst_begin;
-		for(int i=0;i<tile_size;++i)
-		{
-			float* dst_value = dst_row_begin;
-			for(int j=0;j<tile_size;++j)
-			{
-				*dst_value += tile[i*tile_size+j];
-				dst_value += dst_col_stride;
-			}
-			dst_row_begin += dst_row_stride;
-		}
-	}
-
-	static void add_from_partial_tile(
-		const float* const tile,
-		float* const dst, const int dst_row_stride, const int dst_col_stride,
-		const int dst_i, const int dst_j,
-		const int rows, const int cols)
-	{
-		float* const dst_begin = dst+(dst_row_stride*dst_i)+(dst_col_stride*dst_j);	
-		float* dst_row_begin = dst_begin;
-		for(int i=0;i<rows;++i)
-		{
-			float* dst_value = dst_row_begin;
-			for(int j=0;j<cols;++j)
-			{
-				*dst_value += tile [i*tile_size+j];
-				dst_value += dst_col_stride;
-			}
-			dst_row_begin += dst_row_stride;
-		}
-	}
-
-	static void add_from_tile(
-		const float* const tile,
-		float* const dst, const int dst_rows, const int dst_cols, const int dst_row_stride, const int dst_col_stride,
-		const int dst_i, const int dst_j)
-	{
-		// Assume whole tile fits in the source and destination matrices.
-		int rows = tile_size;
-		int cols = tile_size;
-
-		// Clip the tile to the destination matrix.
-		if(dst_i+tile_size>dst_rows)
-			rows = dst_rows-dst_i;
-		if(dst_j+tile_size>dst_cols)
-			cols = dst_cols-dst_j;
-
-		// Use the whole tile if it fits, otherwise use a partial tile.
-		if(rows==tile_size&&cols==tile_size)
-			add_from_whole_tile(
-				tile,
-				dst, dst_row_stride, dst_col_stride,
-				dst_i,dst_j);
-		else
-			add_from_partial_tile(
-				tile,
-				dst, dst_row_stride, dst_col_stride,
-				dst_i,dst_j,
-				rows,cols);
-	}
-
-	static void copy_whole_tile_row_major(
-		float* const tile,
-		const float* const src,const int src_row_stride, const int src_col_stride,const int src_i,const int src_j)
-	{
-		const float* const src_begin = src+(src_row_stride*src_i)+(src_col_stride*src_j);	
-		const float* src_row_begin = src_begin;
-		for(int i=0;i<tile_size;++i)
-		{
-			const float* src_value = src_row_begin;
-			for(int j=0;j<tile_size;++j)
-			{
-				tile[i*tile_size+j] = *src_value;
-				src_value += src_col_stride;
-			}
-			src_row_begin += src_row_stride;
-		}
-	}
-
-	static void copy_whole_tile_col_major(
-		float* const tile,
-		const float* const src,const int src_row_stride, const int src_col_stride,const int src_i,const int src_j)
-	{
-		const float* const src_begin = src+(src_row_stride*src_i)+(src_col_stride*src_j);	
-		const float* src_col_begin = src_begin;
-		for(int j=0;j<tile_size;++j)
-		{
-			const float* src_value = src_col_begin;
-			for(int i=0;i<tile_size;++i)
-			{
-				tile[i*tile_size+j] = *src_value;
-				src_value += src_row_stride;
-			}
-			src_col_begin += src_col_stride;
-		}
-	}
-
-	static void copy_whole_tile(
-		float* const tile,
-		const float* const src,const int src_row_stride, const int src_col_stride,const int src_i,const int src_j)
-	{
-		if(src_col_stride<src_row_stride)
-			copy_whole_tile_row_major(
-				tile,
-				src,src_row_stride,src_col_stride,src_i,src_j);
-		else
-			copy_whole_tile_col_major(
-				tile,
-				src,src_row_stride,src_col_stride,src_i,src_j);
-	}
-
-	static void copy_partial_tile(
-		float* const tile,
-		const float* const src,const int src_row_stride,const int src_col_stride,const int src_i,const int src_j,
-		const int rows, const int cols)
-	{
-		memset(tile,0,sizeof(float)*tile_size*tile_size);
-		const float* const src_begin = src+(src_row_stride*src_i)+(src_col_stride*src_j);
-		const float* src_row_begin = src_begin;
-		for(int i=0;i<rows;++i)
-		{
-			const float* src_value = src_row_begin;
-			for(int j=0;j<cols;++j)
-			{
-				tile[i*tile_size+j] = *src_value;
-				src_value += src_col_stride;
-			}
-			src_row_begin += src_row_stride;
-		}
-	}
-
-
-	static void copy_to_tile(
-		float* const tile,
-		const float* const src, const int src_rows, const int src_cols, const int src_row_stride, const int src_col_stride,
-		const int src_i, const int src_j)
-	{
-		// Assume whole tile is to be copied from the source matrix.
-		int rows = tile_size;
-		int cols = tile_size;
-
-		// Clip the copy to the source matrix.
-		if(src_i+tile_size>src_rows)
-			rows = src_rows-src_i;
-		if(src_j+tile_size>src_cols)
-			cols = src_cols-src_j;
-
-		// Use the whole tile if it fits, otherwise use a partial tile.
-		if(rows==tile_size&&cols==tile_size)
-			copy_whole_tile(
-				tile,
-				src,src_row_stride,src_col_stride,src_i,src_j);
-		else
-			copy_partial_tile(
-				tile,
-				src, src_row_stride, src_col_stride,src_i,src_j,
-				rows,cols);
-	}
-
-	static void matmul_tile(const float* const a,const float* const b,float* const c)
-	{
-		for(int i=0;i<tile_size;++i)
-		{
-			for(int j=0;j<tile_size;++j)
-			{
-				float acc = 0.0;
-				for(int k=0;k<tile_size;++k)
-					acc += a[i*tile_size+k] * b[k*tile_size+j];
-				c[i*tile_size+j] = acc;
-			}
-		}
-	}
-
 	NDArray MatMul(const NDArray& v) const
 	{
 		// Both arrays must be 2D.
@@ -1637,7 +1298,14 @@ public:
 		const int tile_rows = ((aRows-1)/tile_size)+1;
 		const int tile_cols = ((bCols-1)/tile_size)+1;
 		const int inner_tiles = ((aCols-1)/tile_size)+1;
-		
+
+		// Transpose the RHS matrix so that the tiles are aligned for multiplication.
+		const NDArray vT = v->Transpose();
+		const int bTRows = vT->_shape[0];
+		const int bTCols = vT->_shape[1];
+		const int bTRowStride = vT->_stride[0];
+		const int bTColStride = vT->_stride[1];
+
 		// Iterate over the tiles of the output matrix.
 		NDThreadPool::TaskGroup taskGroup;
 		for(int tile_row=0;tile_row<tile_rows;++tile_row)
@@ -1645,9 +1313,9 @@ public:
 			for(int tile_col=0;tile_col<tile_cols;++tile_col)
 			{
 				// Compute the output tile - run independent output tile as task - better parallelism than parallel for.
-				taskGroup.Run([this,&v,&r,
+				taskGroup.Run([this,&vT,&r,
 					aRows,aCols,aRowStride,aColStride,
-					bRows,bCols,bRowStride,bColStride,
+					bTRows,bTCols,bTRowStride,bTColStride,
 					cRows,cCols,cRowStride,cColStride,
 					tile_row,tile_col,inner_tiles]()
 				{
@@ -1659,24 +1327,24 @@ public:
 					{
 						// Copy p-th inner tile from tile row a.
 						copy_to_tile(
-							&x[0][0],									// Destination tile matrix.
-							_data,aRows,aCols,aRowStride,aColStride,	// Source matrix description.
-							tile_row*tile_size,p*tile_size);			// Source tile row and column.
+							&x[0][0],											// Destination tile matrix.
+							_data,aRows,aCols,aRowStride,aColStride,			// Source matrix description.
+							tile_row*tile_size,p*tile_size);					// Source tile row and column.
 
-						// Copy p-th inner tile from tile column b.
+						// Copy p-th inner tile from tile row bT.
 						copy_to_tile(
-							&y[0][0],									// Destination tile matrix.
-							v->_data,bRows,bCols,bRowStride,bColStride,	// Source matrix description.
-							p*tile_size,tile_col*tile_size);			// Source tile row and column.
+							&y[0][0],											// Destination tile matrix.
+							vT->_data,bTRows,bTCols,bTRowStride,bTColStride,	// Source matrix description.
+							tile_col*tile_size,p*tile_size);					// Source tile row and column.
 
-						// Multiply the two tiles.
+						// Multiply the two tiles a@bT.
 						matmul_tile(&x[0][0],&y[0][0],&z[0][0]);
 
 						// Add the result tile to the output matrix.
 						add_from_tile(
-							&z[0][0],									// Source tile matrix.
-							r->_data,cRows,cCols,cRowStride,cColStride,	// Destination matrix description.
-							tile_row*tile_size,tile_col*tile_size);		// Destination tile row and column.
+							&z[0][0],											// Source tile matrix.
+							r->_data,cRows,cCols,cRowStride,cColStride,			// Destination matrix description.
+							tile_row*tile_size,tile_col*tile_size);				// Destination tile row and column.
 					}
 				});
 			}

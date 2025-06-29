@@ -234,6 +234,7 @@
     <ClInclude Include="KoUnsqueeze.h" />
     <ClInclude Include="Layer.h" />
     <ClInclude Include="Linear.h" />
+    <ClInclude Include="TiledMatMul.h" />
     <ClInclude Include="Model.h" />
     <ClInclude Include="MSELoss.h" />
     <ClInclude Include="NDAllocator.h" />
