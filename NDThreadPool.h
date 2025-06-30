@@ -3,7 +3,7 @@
 #include <Windows.h>
 #include <mutex>
 #include <vector>
-#include <queue>
+#include <concurrent_queue.h>
 #include <iostream>
 
 
@@ -105,13 +105,13 @@ public:
     };
 
 private:
-    std::mutex                  _workersMutex;
-    std::condition_variable     _workersCondition;
-    std::vector<std::thread>    _workers;
-    std::mutex                  _workMutex;
-    std::condition_variable     _workCondition;
-    std::queue<Task*>           _work;
-    bool                        _stop;
+    std::mutex                              _workersMutex;
+    std::condition_variable                 _workersCondition;
+    std::vector<std::thread>                _workers;
+    std::mutex                              _workMutex;
+    std::condition_variable                 _workCondition;
+    concurrency::concurrent_queue<Task*>	_work;
+    bool                                    _stop;
 
 
 	template<typename T>
@@ -142,21 +142,19 @@ private:
     {
         Task* task = nullptr;
 
+		// Look for work on the queue - without blocking.
+		if(!_work.try_pop(task))
         {
-            // Wait for work to be added to the queue.
+            // Wait for work to be added to the queue - blocking.
             std::unique_lock<std::mutex> lk(_workMutex);       // Take work lock before waiting on the queue.
             _workCondition.wait(lk,[this,waitForWork]()        // Release lock and suspend this thread until notified. When notified this thread will own the lock again.
             {
                 return !waitForWork||!_work.empty()||_stop;     // Don't enter wait if any of these conditions are true.
             });     
 
-            // Check queue for work - this thread now owns '_queueMutex'.
-            if(!_work.empty())
-            {
-                task = _work.front();
-                _work.pop();
-            }
-        } // Release '_queueMutex'.
+            // Check queue for work - this thread now owns '_workMutex'.
+			_work.try_pop(task);
+        } // Release '_workMutex'.
 
         // Run work popped from the queue.
         if(task)
@@ -204,8 +202,8 @@ private:
     void _ForEach(const int begin,const int end,const T& lambda)
     {
         // Split range.
-        int subRange = (std::max)((end-begin+_numHardwareCores-1)/_numHardwareCores,1);
-        int taskCount = (std::min)((end-begin)+subRange-1/subRange,_numHardwareCores);
+        const int subRange = (std::max)((end-begin+_numHardwareCores-1)/_numHardwareCores,1);
+        const int taskCount = (std::min)((end-begin)+subRange-1/subRange,_numHardwareCores);
         if(subRange*taskCount<(end-begin))
             throw "Error!";
 
@@ -254,10 +252,8 @@ public:
 
 	void Run(Task* task)
     {
-        std::unique_lock<std::mutex> lk(_workMutex);    // Lock work queue.
-		_work.emplace(task);                            // Add task to the queue.
-		lk.unlock();                                    // Unlock work queue.
-        _workCondition.notify_one();                    // Notify a worker that work is ready.
+		_work.push(task);               // Add task to the queue.
+        _workCondition.notify_one();    // Notify a worker that work is ready.
     }
 
     template<typename T>
