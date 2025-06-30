@@ -34,11 +34,11 @@ public:
 
 	virtual const Tensors Forward(const TensorPtr& x,const TensorPtr& y=nullptr)
 	{
-		return x;
+		return {x,y};
 	}
 
 	Tensors operator() (const TensorPtr& x,const TensorPtr& y=nullptr)
 	{
-		return {x,y};
+		return Forward(x,y);
 	}
 };
