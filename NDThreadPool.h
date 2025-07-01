@@ -113,14 +113,15 @@ private:
     concurrency::concurrent_queue<Task*>	_work;
     bool                                    _stop;
 
-
+	// Task to run a lambda function for each value in a range.
 	template<typename T>
-    struct ForEachTask : Task
+    class ForEachTask : public Task
     {
-        int      _begin;
-        int      _end;
-		const T& _lambda;
+        const int   _begin;
+        const int   _end;
+		const T&    _lambda;    // Lambda reference is thread-safe because it's scoped to the for loop.
 
+    public:
         ForEachTask(TaskGroup& taskGroup,const int begin,const int end,const T& lambda) :
             Task(taskGroup),
             _begin(begin),
@@ -235,7 +236,6 @@ public:
             _workersCondition.wait(lk);                 // Wait for the new worker to signal it's running.
         }
     }
-
 
     ~NDThreadPool()
     {
