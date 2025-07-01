@@ -81,7 +81,7 @@ static void add_from_tile(
 }
 
 
-// Copies square tile from and arbitrary shape matrix - source row major (value along a row are adjacent).
+// Copies square tile from and arbitrary shape matrix - source row major (values across a row are adjacent).
 //
 static void copy_whole_tile_row_major(
 	float* const tile,
@@ -91,18 +91,29 @@ static void copy_whole_tile_row_major(
 	const float* src_row_begin = src_begin;
 	for(int i=0;i<tile_size;++i)
 	{
+        // Use AVX2 to copy 8 floats at a time
 		const float* src_value = src_row_begin;
-		for(int j=0;j<tile_size;++j)
+        for(int j=0;j<tile_size;j+=8) 
 		{
-			tile[i*tile_size+j] = *src_value;
-			src_value += src_col_stride;
-		}
+            __m256 v = _mm256_set_ps(
+                src_value[7*src_col_stride],
+                src_value[6*src_col_stride],
+                src_value[5*src_col_stride],
+                src_value[4*src_col_stride],
+                src_value[3*src_col_stride],
+                src_value[2*src_col_stride],
+                src_value[1*src_col_stride],
+                src_value[0*src_col_stride]
+            );
+			_mm256_storeu_ps(&tile[i*tile_size+j],v);	// Tile is row major.
+            src_value += 8*src_col_stride;
+        }
 		src_row_begin += src_row_stride;
 	}
 }
 
 
-// Copies square tile from and arbitrary shape matrix - source column major (value along a column are adjacent).
+// Copies square tile from and arbitrary shape matrix - source column major (values down a column are adjacent).
 //
 static void copy_whole_tile_col_major(
 	float* const tile,
@@ -112,12 +123,8 @@ static void copy_whole_tile_col_major(
 	const float* src_col_begin = src_begin;
 	for(int j=0;j<tile_size;++j)
 	{
-		const float* src_value = src_col_begin;
 		for(int i=0;i<tile_size;++i)
-		{
-			tile[i*tile_size+j] = *src_value;
-			src_value += src_row_stride;
-		}
+			tile[i*tile_size+j] = src_col_begin[i*src_row_stride];	// Tile is row major.
 		src_col_begin += src_col_stride;
 	}
 }
@@ -154,10 +161,7 @@ static void copy_partial_tile(
 	{
 		const float* src_value = src_row_begin;
 		for(int j=0;j<cols;++j)
-		{
-			tile[i*tile_size+j] = *src_value;
-			src_value += src_col_stride;
-		}
+			tile[i*tile_size+j] = src_row_begin[j*src_col_stride];
 		src_row_begin += src_row_stride;
 	}
 }
@@ -194,10 +198,12 @@ static void copy_to_tile(
 
 
 // Multiply 2 square matricies a and bT to produce c.
-// 'a' is row major, and 'bT' is column major.
+//   'a' is row major (values across a row are adjacent).
+//   'bT' is column major (values down a column are adjacent).
+// 
 // The compiler will unroll the inner loop and use AVX2 256 bit SIMD fused multiply add instructons.
 //
-static void matmul_tile(const float* const a,const float* const b,float* const c)
+static void matmul_tile(const float* const a,const float* const bT,float* const c)
 {
 	for(int i=0;i<tile_size;++i)
 	{
@@ -205,7 +211,7 @@ static void matmul_tile(const float* const a,const float* const b,float* const c
 		{
 			float acc = 0.0;
 			for(int k=0;k<tile_size;++k)
-				acc += a[i*tile_size+k] * b[j*tile_size+k];
+				acc += a[i*tile_size+k] * bT[j*tile_size+k];
 			c[i*tile_size+j] = acc;
 		}
 	}

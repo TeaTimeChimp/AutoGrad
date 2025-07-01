@@ -1349,8 +1349,6 @@ public:
 				});
 			}
 		}
-
-		// Wait for all tasks to complete.
 		taskGroup.Wait();
 
 		r->DebugRangeCheck();
