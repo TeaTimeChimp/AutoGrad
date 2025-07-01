@@ -408,6 +408,128 @@ namespace
 	void Test_Dot()
 	{
 		{
+			NDArray x = NDData::New({4,3},
+				{
+					 1, 2, 3,
+					 4, 5, 6,
+					 7, 8, 9,
+					10,11,12
+				});
+			print(x,"x");
+			
+			NDArray y = NDData::New({3,5},
+			{
+				 1, 2, 3, 4, 5,
+				 6, 7, 8, 9,10,
+				11,12,13,14,15
+			});
+			print(y,"y");
+
+			NDArray z = x.Dot(y);
+			print(z,"z");
+
+			Assert(z.IsEqualTo(NDData::New({4,5},
+				{
+					 46, 52, 58, 64, 70,
+					100,115,130,145,160,
+					154,178,202,226,250,
+					208,241,274,307,340
+				})));			
+		}
+		{
+			NDArray x = NDData::New({3,4},
+				{
+					 1, 4, 7,10,
+					 2, 5, 8,11,
+					 3, 6, 9,12
+				});
+			NDArray xt = x.Transpose();
+			print(xt,"xt");
+			
+			NDArray y = NDData::New({3,5},
+			{
+				 1, 2, 3, 4, 5,
+				 6, 7, 8, 9,10,
+				11,12,13,14,15
+			});
+			print(y,"y");
+
+			NDArray z = xt.Dot(y);
+			print(z,"z");
+
+			Assert(z.IsEqualTo(NDData::New({4,5},
+				{
+					 46, 52, 58, 64, 70,
+					100,115,130,145,160,
+					154,178,202,226,250,
+					208,241,274,307,340
+				})));			
+		}
+		{
+			NDArray x = NDData::New({4,3},
+				{
+					 1, 2, 3,
+					 4, 5, 6,
+					 7, 8, 9,
+					10,11,12
+				});
+			print(x,"x");
+			
+			NDArray y = NDData::New({5,3},
+			{
+				1, 6,11,
+				2, 7,12,
+				3, 8,13,
+				4, 9,14,
+				5,10,15
+			});
+			NDArray yt = y.Transpose();
+			print(yt,"yt");
+
+			NDArray z = x.Dot(yt);
+			print(z,"z");
+
+			Assert(z.IsEqualTo(NDData::New({4,5},
+				{
+					 46, 52, 58, 64, 70,
+					100,115,130,145,160,
+					154,178,202,226,250,
+					208,241,274,307,340
+				})));			
+		}
+		{
+			NDArray x = NDData::New({3,4},
+				{
+					 1, 4, 7,10,
+					 2, 5, 8,11,
+					 3, 6, 9,12
+				});
+			NDArray xt = x.Transpose();
+			print(xt,"xt");
+			
+			NDArray y = NDData::New({5,3},
+			{
+				1, 6,11,
+				2, 7,12,
+				3, 8,13,
+				4, 9,14,
+				5,10,15
+			});
+			NDArray yt = y.Transpose();
+			print(yt,"yt");
+
+			NDArray z = xt.Dot(yt);
+			print(z,"z");
+
+			Assert(z.IsEqualTo(NDData::New({4,5},
+				{
+					 46, 52, 58, 64, 70,
+					100,115,130,145,160,
+					154,178,202,226,250,
+					208,241,274,307,340
+				})));			
+		}
+		{
 			NDArray x = NDData::New({2,3,4},
 				{
 					 1, 2, 3, 4,
