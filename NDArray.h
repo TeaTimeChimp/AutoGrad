@@ -1285,6 +1285,10 @@ public:
 		if(aCols!=bRows)
 			throw IncompatibleShape();
 
+		// Expect at least one stride to be 1.
+		if(aRowStride!=1&&aColStride!=1||bRowStride!=1&&bColStride!=1)
+			throw IncompatibleShape();
+
 		// Create output shape.
 		NDShape shape(_shape);
 		shape[1] = bCols;
@@ -1299,57 +1303,59 @@ public:
 		const int tile_cols = ((bCols-1)/tile_size)+1;
 		const int inner_tiles = ((aCols-1)/tile_size)+1;
 
-		// Transpose the RHS matrix so that the tiles are aligned for multiplication.
+		// Transpose the RHS matrix so that the tiles are aligned for multiplication (cheap, just changes shape and stride).
 		const NDArray vT = v->Transpose();
 		const int bTRows = vT->_shape[0];
 		const int bTCols = vT->_shape[1];
 		const int bTRowStride = vT->_stride[0];
 		const int bTColStride = vT->_stride[1];
 
-		// Iterate over the tiles of the output matrix.
-		NDThreadPool::TaskGroup taskGroup;
-		for(int tile_row=0;tile_row<tile_rows;++tile_row)
-		{
-			for(int tile_col=0;tile_col<tile_cols;++tile_col)
+		{// Scoped TaskGroup.
+			NDThreadPool::TaskGroup taskGroup;
+
+			// Iterate over the tiles of the output matrix.		
+			for(int tile_row=0;tile_row<tile_rows;++tile_row)
 			{
-				// Compute the output tile - run independent output tile as task - better parallelism than parallel for.
-				taskGroup.Run([this,&vT,&r,
-					aRows,aCols,aRowStride,aColStride,
-					bTRows,bTCols,bTRowStride,bTColStride,
-					cRows,cCols,cRowStride,cColStride,
-					tile_row,tile_col,inner_tiles]()
+				for(int tile_col=0;tile_col<tile_cols;++tile_col)
 				{
-					// Reserve tile buffers per thread - these are held in L1 cache.
-					float x[tile_size][tile_size];
-					float y[tile_size][tile_size];
-					float z[tile_size][tile_size];
-					for(int p=0;p<inner_tiles;++p)
+					// Compute the output tile - run independent output tile as task - better parallelism than parallel for.
+					taskGroup.Run([this,&vT,&r,
+						aRows,aCols,aRowStride,aColStride,
+						bTRows,bTCols,bTRowStride,bTColStride,
+						cRows,cCols,cRowStride,cColStride,
+						tile_row,tile_col,inner_tiles]()
 					{
-						// Copy p-th inner tile from tile row a.
-						copy_to_tile(
-							&x[0][0],											// Destination tile matrix.
-							_data,aRows,aCols,aRowStride,aColStride,			// Source matrix description.
-							tile_row*tile_size,p*tile_size);					// Source tile row and column.
+						// Reserve tile buffers per thread - these are held in L1 cache.
+						float x[tile_size][tile_size];
+						float y[tile_size][tile_size];
+						float z[tile_size][tile_size];
+						for(int p=0;p<inner_tiles;++p)
+						{
+							// Copy p-th inner tile from tile row a.
+							copy_to_tile(
+								&x[0][0],											// Destination tile matrix.
+								_data,aRows,aCols,aRowStride,aColStride,			// Source matrix description.
+								tile_row*tile_size,p*tile_size);					// Source tile row and column.
 
-						// Copy p-th inner tile from tile row bT.
-						copy_to_tile(
-							&y[0][0],											// Destination tile matrix.
-							vT->_data,bTRows,bTCols,bTRowStride,bTColStride,	// Source matrix description.
-							tile_col*tile_size,p*tile_size);					// Source tile row and column.
+							// Copy p-th inner tile from tile row bT.
+							copy_to_tile(
+								&y[0][0],											// Destination tile matrix.
+								vT->_data,bTRows,bTCols,bTRowStride,bTColStride,	// Source matrix description.
+								tile_col*tile_size,p*tile_size);					// Source tile row and column.
 
-						// Multiply the two tiles a@bT.
-						matmul_tile(&x[0][0],&y[0][0],&z[0][0]);
+							// Multiply the two tiles a@bT.
+							matmul_tile(&x[0][0],&y[0][0],&z[0][0]);
 
-						// Add the result tile to the output matrix.
-						add_from_tile(
-							&z[0][0],											// Source tile matrix.
-							r->_data,cRows,cCols,cRowStride,cColStride,			// Destination matrix description.
-							tile_row*tile_size,tile_col*tile_size);				// Destination tile row and column.
-					}
-				});
+							// Add the result tile to the output matrix.
+							add_from_tile(
+								&z[0][0],											// Source tile matrix.
+								r->_data,cRows,cCols,cRowStride,cColStride,			// Destination matrix description.
+								tile_row*tile_size,tile_col*tile_size);				// Destination tile row and column.
+						}
+					});
+				}
 			}
-		}
-		taskGroup.Wait();
+		} // Waits for TaskGroup.
 
 		r->DebugRangeCheck();
 		return r;

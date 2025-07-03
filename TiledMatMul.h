@@ -1,7 +1,7 @@
 #pragma once
 
 
-static const int tile_size = 32;	// Tile size for matrix multiplication.
+constexpr int tile_size = 32;	// Tile size for matrix multiplication.
 
 
 // Adds the whole square tile to an arbitray shape matrix.
@@ -85,8 +85,10 @@ static void add_from_tile(
 //
 static void copy_whole_tile_row_major(
 	float* const tile,
-	const float* const src,const int src_row_stride, const int src_col_stride,const int src_i,const int src_j)
+	const float* const src,const int src_row_stride, const int _src_col_stride,const int src_i,const int src_j)
 {
+	_ASSERT(_src_col_stride==1);
+	constexpr int src_col_stride = 1;
 	const float* const src_begin = src+(src_row_stride*src_i)+(src_col_stride*src_j);	
 	const float* src_row_begin = src_begin;
 	for(int i=0;i<tile_size;++i)
@@ -117,8 +119,10 @@ static void copy_whole_tile_row_major(
 //
 static void copy_whole_tile_col_major(
 	float* const tile,
-	const float* const src,const int src_row_stride, const int src_col_stride,const int src_i,const int src_j)
+	const float* const src,const int _src_row_stride, const int src_col_stride,const int src_i,const int src_j)
 {
+	_ASSERT(_src_row_stride==1);
+	constexpr int src_row_stride = 1;
 	const float* const src_begin = src+(src_row_stride*src_i)+(src_col_stride*src_j);	
 	const float* src_col_begin = src_begin;
 	for(int j=0;j<tile_size;++j)

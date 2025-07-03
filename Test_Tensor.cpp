@@ -1090,7 +1090,7 @@ void Test_Tensor()
 
 	{
 		cout<<"repeat_0: input."<<endl;
-		TensorPtr x = Tensor::New(NDData::New({4,1},{0.0,0.1,0.2,0.3}),true);	// Column vector.
+		TensorPtr x = Tensor::New(NDData::New({4,1},{0.0f,0.1f,0.2f,0.3f}),true);	// Column vector.
 		x->Print();
 		cout<<"repeat_0: output."<<endl;
 		TensorPtr y = x->Repeat(0,3);	// Make column 3 times longer.

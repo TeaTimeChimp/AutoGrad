@@ -23,85 +23,102 @@ private:
         Task(TaskGroup& taskGroup):
 			_taskGroup(taskGroup)
         {
-			_taskGroup.IncrementRemainingTasks();
+			_taskGroup.AddTask();
         }
 
-        void Run()
+        virtual ~Task() = default;
+
+        void Run() const
         {
             Invoke();
-            _taskGroup.DecrementRemainingTasks();
+            _taskGroup.ReleaseTask();
         }
 
-        virtual void Invoke() = 0;
+        virtual void Invoke() const = 0;
     };
 
 public:
     class TaskGroup
     {
-        std::mutex              _remainingTasksMutex;
-        std::condition_variable _remainingTasksCondition;
-        volatile int            _remainingTasks;
-
-    public:
-        TaskGroup() :
-            _remainingTasks(0)
-        {
-		}
-
-        void IncrementRemainingTasks()
-        {
-            std::unique_lock<std::mutex> lk(_remainingTasksMutex);
-			++_remainingTasks;
-        }
-
-		void DecrementRemainingTasks()
-        {
-            // Decrement task group remaining task counter and notify control thread when complete.
-            std::unique_lock<std::mutex> lk(_remainingTasksMutex);
-
-			// If all tasks are complete then notify the waiting thread.
-            if(--_remainingTasks==0)
-				_remainingTasksCondition.notify_one();
-        }
-        
-
+		// Task to run a lambda function.
         template<typename T>
-        struct LambdaTask : Task
+        class LambdaTask : public Task
         {
-			const T _lambda;    // Thread-safe copy of lambda function.
+		    const T _lambda;    // Thread-safe copy of lambda function.
 
+        public:
             LambdaTask(TaskGroup& taskGroup,const T& lambda) :
                 Task(taskGroup),
                 _lambda(lambda)
             {
             }
 
-            void Invoke() override
+            void Invoke() const override
             {
                 _lambda();
             }
-		};
+	    };
 
+		std::mutex              _workRemainingWaitMutex;        // Mutex to protect access to the remaining tasks counter/condition variable.
+		std::condition_variable _workRemainingWaitCondition;    // Condition variable to wait for remaining tasks to complete.
+		std::atomic<int>        _workRemainingCount;            // Number of tasks with work to run.
+        std::atomic<int>        _taskReferenceCount;            // Number of Task object still referenceing this TaskGroup.
+    
+    public:
+        TaskGroup() :
+			_workRemainingCount(0),
+			_taskReferenceCount(0)
+        {
+		}
+
+        ~TaskGroup()
+        {
+            // Process work from the queue to avoid deadlock.
+            //  - If all threads are waiting for work to complete then there are no threads to do the work.
+            while(_pool.ServiceWorkQueue(false));
+
+			// Wait on the for workers to complete the remaining tasks.
+            {
+                std::unique_lock<std::mutex> lk(_workRemainingWaitMutex);
+                _workRemainingWaitCondition.wait(lk,[this]()
+                {   
+                    return _workRemainingCount==0;       // Don't enter wait if tasks are complete.
+                });
+            }
+
+            // Spin until all references are released and the task group is safe to destroy.
+            while(_taskReferenceCount>0)
+				std::this_thread::yield();
+        }
+
+        void AddTask()
+        {
+			// Increment reference and remaining work counter.
+			++_taskReferenceCount;
+            ++_workRemainingCount;
+        }
+
+		void ReleaseTask()
+        {
+            // Decrement remaining work counter. The counter can bounce between 0 and +ve whilst tasks are being added and worked.
+            if(--_workRemainingCount==0)
+            {
+				// Lock the mutex to avoid a race with the waiting thread.
+                //   - Else if work remaining goes to 0 before the waiter has released the mutex
+                //     and started to wait then it would miss the notification
+                std::unique_lock<std::mutex> lk(_workRemainingWaitMutex);
+				_workRemainingWaitCondition.notify_one();
+            }
+
+			// Decrement reference count - this task will not access the task group again.
+            --_taskReferenceCount;
+        }
 
         template<typename T>
         void Run(const T& lambda)
         {
             _pool.Run(new LambdaTask<T>(*this,lambda));
 		}
-
-        void Wait()
-        {
-            // Process work from the queue to avoid deadlock (if all threads are waiting for work to complete then there are no threads available to do the work).
-            while(_pool.ServiceWorkQueue(false));
-
-            std::unique_lock<std::mutex> lk(_remainingTasksMutex);
-            _remainingTasksCondition.wait(lk,[this]()
-            {   
-                return _remainingTasks==0;       // Don't enter wait if task is already complete.
-            });
-            if(_remainingTasks!=0)
-                throw "Error!";
-        }
     };
 
 private:
@@ -130,7 +147,7 @@ private:
         {
         }
 
-        void Invoke() override
+        void Invoke() const override
         {
             // Run user task for each value in range.
             for(int i=_begin;i<_end;++i)
@@ -207,16 +224,14 @@ private:
         const int taskCount = (std::min)((end-begin)+subRange-1/subRange,_numHardwareCores);
         if(subRange*taskCount<(end-begin))
             throw "Error!";
+		
+        {// Scoped TaskGroup.
+		    TaskGroup taskGroup;
 
-		// Create a task group to track remaining tasks.
-		TaskGroup taskGroup;
-
-        // Enqueue tasks.
-        for(int i=0;i<taskCount;++i)
-			Run(new ForEachTask<T>(taskGroup,i*subRange,(std::min)((i+1)*subRange,end),lambda));
-
-        // Wait for completion.
-        taskGroup.Wait();
+            // Enqueue tasks.
+            for(int i=0;i<taskCount;++i)
+			    Run(new ForEachTask<T>(taskGroup,i*subRange,(std::min)((i+1)*subRange,end),lambda));
+		}// Waits for TaskGroup.
     }
 
 public:
