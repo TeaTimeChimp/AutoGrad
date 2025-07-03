@@ -59,61 +59,36 @@ public:
             }
 	    };
 
-		std::mutex              _workRemainingWaitMutex;        // Mutex to protect access to the remaining tasks counter/condition variable.
-		std::condition_variable _workRemainingWaitCondition;    // Condition variable to wait for remaining tasks to complete.
-		std::atomic<int>        _workRemainingCount;            // Number of tasks with work to run.
-        std::atomic<int>        _taskReferenceCount;            // Number of Task object still referenceing this TaskGroup.
+		std::atomic<int> _taskCount;    // Number of tasks left to run.
     
     public:
         TaskGroup() :
-			_workRemainingCount(0),
-			_taskReferenceCount(0)
+			_taskCount(0)
         {
 		}
 
+		// Destructor, waits for all tasks in this group to complete.
         ~TaskGroup()
         {
-            // Process work from the queue to avoid deadlock.
-            //  - If all threads are waiting for work to complete then there are no threads to do the work.
-            while(_pool.ServiceWorkQueue(false));
-
-			// Wait on the for workers to complete the remaining tasks.
+            // Process work from the queue until all tasks in this group are complete.
+            while(_taskCount>0)
             {
-                std::unique_lock<std::mutex> lk(_workRemainingWaitMutex);
-                _workRemainingWaitCondition.wait(lk,[this]()
-                {   
-                    return _workRemainingCount==0;       // Don't enter wait if tasks are complete.
-                });
-            }
-
-            // Spin until all references are released and the task group is safe to destroy.
-            while(_taskReferenceCount>0)
+                _pool.ServiceWorkQueue(false);
 				std::this_thread::yield();
+            }
         }
 
         void AddTask()
         {
-			// Increment reference and remaining work counter.
-			++_taskReferenceCount;
-            ++_workRemainingCount;
+            ++_taskCount;
         }
 
 		void ReleaseTask()
         {
-            // Decrement remaining work counter. The counter can bounce between 0 and +ve whilst tasks are being added and worked.
-            if(--_workRemainingCount==0)
-            {
-				// Lock the mutex to avoid a race with the waiting thread.
-                //   - Else if work remaining goes to 0 before the waiter has released the mutex
-                //     and started to wait then it would miss the notification
-                std::unique_lock<std::mutex> lk(_workRemainingWaitMutex);
-				_workRemainingWaitCondition.notify_one();
-            }
-
-			// Decrement reference count - this task will not access the task group again.
-            --_taskReferenceCount;
+            --_taskCount;
         }
 
+		// Run a task in this group.
         template<typename T>
         void Run(const T& lambda)
         {
