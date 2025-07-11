@@ -72,10 +72,7 @@ public:
         {
             // Process work from the queue until all tasks in this group are complete.
             while(_taskCount>0)
-            {
                 _pool.ServiceWorkQueue(false);
-				std::this_thread::yield();
-            }
         }
 
         void AddTask()
@@ -136,13 +133,13 @@ private:
         Task* task = nullptr;
 
 		// Look for work on the queue - without blocking.
-		if(!_work.try_pop(task))
+		if(!_work.try_pop(task)&&waitForWork)
         {
             // Wait for work to be added to the queue - blocking.
             std::unique_lock<std::mutex> lk(_workMutex);       // Take work lock before waiting on the queue.
             _workCondition.wait(lk,[this,waitForWork]()        // Release lock and suspend this thread until notified. When notified this thread will own the lock again.
             {
-                return !waitForWork||!_work.empty()||_stop;     // Don't enter wait if any of these conditions are true.
+                return !_work.empty()||_stop;                   // Don't enter wait if either of these conditions are true.
             });     
 
             // Check queue for work - this thread now owns '_workMutex'.
