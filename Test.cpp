@@ -7,6 +7,7 @@
 #include "Test_NDArray.h"
 #include "Test_Tensor.h"
 #include "Test_NDThreadPool.h"
+#include "Test_Broadcast.h"
 
 
 using namespace std;
@@ -60,6 +61,7 @@ void print(const NDShape& v)
 
 void Test()
 {
+	Test_Broadcast();
 	Test_NDThreadPool();
 	Test_NDArray();
 	Test_Tensor();

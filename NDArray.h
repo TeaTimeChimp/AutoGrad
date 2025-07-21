@@ -240,28 +240,57 @@ class NDData : public std::enable_shared_from_this<NDData>
 
 	// Data iterator - iterates every data value.
 	//
-	class NDIterator2 : public NDIterator
+	class NDIterator2
 	{
+		const NDShape&				_shape;
 		const NDShape&				_stride;
+		NDShape						_offsets;
+		std::initializer_list<int>	_slices[NDShape::MaxDims];	// Slice for each dimension (wraps _offset).
 		FP*							_data;
+		int							_remaining;
+
+		int ComputeSize() const
+		{
+			// Compute end pointer based on shape and stride.
+			int size = 1;
+			for(int i=0;i<_shape.size();++i)
+				size *= _shape[i];
+			return size;
+		}
 
 	public:
 		NDIterator2(const NDData& data) :
-			NDIterator(data.Shape()),
+			_shape(data._shape),
 			_stride(data._stride),
-			_data(data._data)
+			_offsets(_shape.size()),
+			_data(data._data),
+			_remaining(ComputeSize())
 		{
+			for(int i=0;i<_offsets.size();++i)
+				_slices[i] = std::initializer_list<int>(_offsets.data()+i,_offsets.data()+i+1);
+		}
+
+		NDIterator2(const NDShape& shape,const NDShape& stride,FP* const data) :
+			_shape(shape),
+			_stride(stride),
+			_offsets(_shape.size()),
+			_data(data),
+			_remaining(ComputeSize())
+		{
+			for(int i=0;i<_offsets.size();++i)
+				_slices[i] = std::initializer_list<int>(_offsets.data()+i,_offsets.data()+i+1);
 		}
 
 		// Increments the position of the iterator.
 		//
 		inline void operator++()
 		{
-			if(_end)
-				throw IteratorAtEnd();
+			// When remaining hits zero, there is no more valid data so exit (else the offsets would carry on each dimension, not harmful, just no point).
+			if(--_remaining==0)
+				return;
 
 			int dim = _offsets.size()-1;
-			while(dim>=0)
+			do
 			{
 				// Increment offset dimension.
 				++_offsets[dim];
@@ -275,17 +304,112 @@ class NDData : public std::enable_shared_from_this<NDData>
 				_offsets[dim] = 0;
 				_data -= _shape[dim]*_stride[dim];
 				--dim;
-			}
+			} while(dim>=0);
 
-			// Reached end.
-			_end = true;
+			// Will only get here if _remaining has gone negative.
+			throw IteratorAtEnd();
+		}
+
+		constexpr bool end() const
+		{
+			return 0;
+		}
+
+		inline bool operator != (const int pos) const
+		{
+			return _remaining!=pos;
 		}
 
 		inline FP& operator* ()
 		{
 			return *_data;
 		}
+
+		// Returns the iterator position in a form compatible with the [] operator.
+		//
+		inline operator std::initializer_list<int>() const
+		{
+			return std::initializer_list<int>(_offsets.begin(),_offsets.end());
+		}
+
+		// Returns the iterator position in a form compatible with the Slice method.
+		//
+		inline operator const std::initializer_list<std::initializer_list<int>> () const
+		{
+			return std::initializer_list<std::initializer_list<int>>(_slices,_slices+_offsets.size());
+		}
 	};
+
+	template<typename F>
+	inline void Aggregate(NDArray& dst,const int dim,const F& foo) const
+	{		
+		// Isolate shapes and strides of non-aggregate dimensions.
+		NDShape srcShape(_shape.size()-1);
+		NDShape srcStride(_stride.size()-1);
+		NDShape dstShape(dst->_shape.size()-1);
+		NDShape dstStride(dst->_stride.size()-1);
+		for(int i=0,j=0;i<_shape.size();++i)
+		{
+			_ASSERT(_shape[i]==dst->_shape[i]||i==dim&&dst->_shape[i]==1);
+			if(i!=dim)
+			{
+				srcShape[j] = _shape[i];
+				srcStride[j] = _stride[i];
+				dstShape[j] = dst->_shape[i];
+				dstStride[j] = dst->_stride[i];
+				++j;
+			}
+		}
+
+		// Iterate over non-fixed dimensions.
+		const int srcDimStride = _stride[dim];
+		const int dstDimStride = dst->_stride[dim];
+		const int dimLength = _shape[dim];
+		for(NDIterator2 srcIter(srcShape,srcStride,_data),dstIter(dstShape,dstStride,dst->_data);srcIter!=srcIter.end();++srcIter,++dstIter)
+		{
+			// Iterate the aggregate dimension.
+			const FP* srcData = &*srcIter;
+			FP acc = 0.0;
+			for(int i=0;i<dimLength;++i)
+			{
+				foo(acc,*srcData);
+				srcData += srcDimStride;
+			}
+			*dstIter = acc;
+		}
+	}
+
+	// Execute the lambda for every data value.
+	//
+	template<typename F>
+	inline void Iterate(const NDData& data,F& foo)
+	{
+		const NDShape&	shape(data.Shape());
+		const NDShape&	stride(data._stride);
+		NDShape			offsets;
+		FP*				data(data._data);
+
+		// Iterate over the dimensions.
+		int dim = offsets.size()-1;
+		while(dim>=0)
+		{
+			// Iterate over the current dimension.
+			while(offsets[dim]<shape[dim])
+			{
+				// Execute on data.				
+				foo(data);
+
+				// Increment offset dimension.
+				++offsets[dim];
+				data += stride[dim];
+			}
+
+			// Carry.
+			offsets[dim] = 0;
+			data -= shape[dim]*stride[dim];
+			--dim;
+		}
+	}
 
 	NDIterator2 Iter() const
 	{
@@ -467,7 +591,7 @@ class NDData : public std::enable_shared_from_this<NDData>
 			{
 				// Source iterator.
 				FP* dst = _data;
-				for(NDIterator2 src=v_->Iter();!src.end();++dst,++src)
+				for(NDIterator2 src=v_->Iter();src!=src.end();++dst,++src)
 					op(*dst,*src);
 			}
 		}
@@ -477,13 +601,13 @@ class NDData : public std::enable_shared_from_this<NDData>
 			{
 				// Destination iterator.
 				const FP* src = v_->_data;
-				for(NDIterator2 dst=Iter();!dst.end();++dst,++src)
+				for(NDIterator2 dst=Iter();dst!=dst.end();++dst,++src)
 					op(*dst,*src);
 			}
 			else
 			{
 				// Source and destination iterator.
-				for(NDIterator2 dst=Iter(),src=v_->Iter();!dst.end();++dst,++src)
+				for(NDIterator2 dst=Iter(),src=v_->Iter();dst!=dst.end();++dst,++src)
 					op(*dst,*src);
 			}
 		}
@@ -524,7 +648,7 @@ public:	// Constructors must be public to use make_shared.
 		{
 			// Use iterator for source.
 			FP* cell = _data;
-			for(NDIterator2 iter=data.Iter();!iter.end();++iter)
+			for(NDIterator2 iter=data.Iter();iter!=iter.end();++iter)
 				*cell++ = *iter;
 		}
 	}
@@ -892,7 +1016,7 @@ public:
 	// 
 	// If the two arrays are different shapes then the following steps are performed.
 	// 
-	//  1) If 'this' has few dimensions, dimensions of size 1 are added to the left of _shape.
+	//  1) If 'this' has fewer dimensions, dimensions of size 1 are added to the left of _shape.
 	// 
 	//  2) From right-to-left dimension of size 1 are replicated to match 'target'.
 	// 
@@ -913,35 +1037,28 @@ public:
 		if(shape.size()>targetShape.size())
 			return Self();
 
-		// Make a copy of this for broadcasting.
-		//NDDataPtr data = NDData::New(*this)._data;						// Deep copy.
-		NDDataPtr data = NDData::New(NDDataPtrC(shared_from_this()))._data;	// View.
+		// Create a new view of the shared read-only data for broadcasting.
+		const NDDataPtr data = NDData::New(NDDataPtrC(shared_from_this()))._data;
 
 		// Add missing dimension(s) to the left.
 		while(data->_shape.size()<targetShape.size())
 		{
-			data->_shape.insert(data->_shape.begin(),1);
-			data->_stride.insert(data->_stride.begin(),data->_stride.size()>0?data->_stride[0]:1);
+			data->_shape.insert(data->_shape.begin(),1);	// New dimension with length 1.
+			data->_stride.insert(data->_stride.begin(),0);	// Could be 1 or 0, but use 0 to indicate this is a fabricated dimension.
 		}
 
 		// Expand unit length dimensions to match the target.
 		for(int dim=(int)data->_shape.size()-1;dim>=0;--dim)
 		{
 			if(data->_shape[dim]==1&&targetShape[dim]>1)
-				data = data->Repeat_Numpy(dim,targetShape[dim])._data;
+			{
+				data->_shape[dim] = targetShape[dim];		// Force length to required expanded length.
+				data->_stride[dim] = 0;						// Force stride to zero so values are repeated for each element of this dimension.
+			}
 		}
 
 		// Return broadcast data (even if it does not match the target because this may be the first step).
 		return data;
-
-		/*
-		// If the shapes match return the new shape.
-		if(data->_shape==targetShape)
-			return data;
-
-		// Broadcasting failed, return self unchanged.
-		return Self();
-		*/
 	}
 
 	const NDArray Broadcast(const NDDataPtrC& target) const
@@ -1008,7 +1125,7 @@ public:
 		else
 		{
 			// Assign each value in the shape - there's in implicit transposition.
-			for(NDIterator2 i=Iter(),j=v->Iter();!i.end();++i,++j)
+			for(NDIterator2 i=Iter(),j=v->Iter();i!=i.end();++i,++j)
 				*i = *j;
 		}
 	}
@@ -1131,7 +1248,7 @@ public:
 
 		// Iterate reduced shape.
 		const int dimSize = _shape[dim];
-		for(NDIterator2 iter=r->Iter();!iter.end();++iter)
+		for(NDIterator2 iter=r->Iter();iter!=iter.end();++iter)
 		{
 			// ArgMax along the aggregation dimension.
 			NDShape indices(iter);
@@ -1558,7 +1675,7 @@ public:
 		NDArray r = NDData::New(indices->_shape);
 
 		// Pick each output value as specified by indices.
-		for(NDIterator2 iter=indices->Iter();!iter.end();++iter)
+		for(NDIterator2 iter=indices->Iter();iter!=iter.end();++iter)
 		{
 			// Index source value.
 			NDShape index(iter);
@@ -1684,7 +1801,7 @@ public:
 
 		// Iterate reduced shape.
 		const int dimSize = _shape[dim];
-		for(NDIterator2 iter=r->Iter();!iter.end();++iter)
+		for(NDIterator2 iter=r->Iter();iter!=iter.end();++iter)
 		{
 			// Max along the aggregation dimension.
 			NDShape indices(iter);
@@ -1727,7 +1844,7 @@ public:
 
 		// Iterate reduced shape.
 		const int dimSize = _shape[dim];
-		for(NDIterator2 iter=r->Iter();!iter.end();++iter)
+		for(NDIterator2 iter=r->Iter();iter!=iter.end();++iter)
 		{
 			// Sum along the aggregation dimension.
 			NDShape indices(iter);
@@ -1774,7 +1891,7 @@ public:
 		}
 		else
 		{
-			for(NDIterator2 iter=Iter();!iter.end();++iter)
+			for(NDIterator2 iter=Iter();iter!=iter.end();++iter)
 				sum += *iter;
 		}
 		r->_data[0] = sum/_size;
@@ -1859,8 +1976,16 @@ public:
 		_ASSERT(HasNaturalStride());
 
 		FP* const rData = _data;
-		for(int i=0;i<_size;++i)
-			rData[i] = pow(rData[i],exponent);
+		if(exponent==2.0)
+		{
+			for(int i=0;i<_size;++i)
+				rData[i] *= rData[i];
+		}
+		else
+		{
+			for(int i=0;i<_size;++i)
+				rData[i] = pow(rData[i],exponent);
+		}
 	}
 
 	NDArray Pow(const FP exponent) const
@@ -2020,7 +2145,7 @@ public:
 		NDArray r = Zeros();										
 
 		// Iterate indices.
-		for(NDIterator2 iter=indices->Iter();!iter.end();++iter)
+		for(NDIterator2 iter=indices->Iter();iter!=iter.end();++iter)
 		{
 			// Index result value.
 			NDShape index(iter);
@@ -2114,23 +2239,11 @@ public:
 		newShape[dim] = 1;
 		NDArray r = NDData::New(newShape);
 
-		// Iterate the new shape.
-		const int dimSize = _shape[dim];
-		for(NDIterator iter(newShape);!iter.end();++iter)
+		// Aggreate along the dimension.
+		Aggregate(r,dim,[](FP& acc,const FP& value)
 		{
-			// Sum along the aggregation dimension.
-			NDShape indices(iter);
-			const std::initializer_list<int> index(indices.data(),indices.data()+indices.size());
-			FP sum = 0.0;
-			for(int i=0;i<dimSize;++i)
-			{
-				indices[dim] = i;
-				sum += (*this)[index];
-			}
-
-			// Store output sum.
-			r[iter] = sum;
-		}
+			acc += value;
+		});
 
 		// Remove aggregation dimension if not kept.
 		if(!keepDims)
@@ -2235,7 +2348,7 @@ public:
 		NDArray r = NDData::New(shape);
 
 		// Iterate indices.
-		for(NDIterator2 iter=indices->Iter();!iter.end();++iter)
+		for(NDIterator2 iter=indices->Iter();iter!=iter.end();++iter)
 			r.Slice(iter) = Slice({{(int)*iter}});
 
 		return r;
