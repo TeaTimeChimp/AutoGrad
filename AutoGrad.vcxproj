@@ -189,6 +189,7 @@
     <ClCompile Include="Random.cpp" />
     <ClCompile Include="String.cpp" />
     <ClCompile Include="Test.cpp" />
+    <ClCompile Include="Test_Broadcast.cpp" />
     <ClCompile Include="Test_Distribution.cpp" />
     <ClCompile Include="Test_Embedding.cpp" />
     <ClCompile Include="Test_Linear.cpp" />
@@ -235,6 +236,7 @@
     <ClInclude Include="Layer.h" />
     <ClInclude Include="Linear.h" />
     <ClInclude Include="NDThreadPool.h" />
+    <ClInclude Include="Test_Broadcast.h" />
     <ClInclude Include="TiledMatMul.h" />
     <ClInclude Include="Model.h" />
     <ClInclude Include="MSELoss.h" />
