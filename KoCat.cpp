@@ -17,7 +17,7 @@ NDArray KoCat::Forward(const NDArrays& inputs)
 
 NDArrays KoCat::Backward(const NDArray& gradient,const NDArrays& inputs)
 {
-	// Split the gradient sending backward the corrensponding values.
+	// Split the gradient sending backward the corresponding values.
 	const int dimCount = inputs[0].Shape().size();
 
 	// Build n-dimensional slicer with variable range in concatenation dimension.
