@@ -58,6 +58,7 @@
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
   <ImportGroup Label="ExtensionSettings">
+    <Import Project="$(VCTargetsPath)\BuildCustomizations\CUDA 13.0.props" />
   </ImportGroup>
   <ImportGroup Label="Shared">
   </ImportGroup>
@@ -128,6 +129,10 @@
       <SubSystem>Console</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
     </Link>
+    <CudaCompile>
+      <Include>
+      </Include>
+    </CudaCompile>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <ClCompile>
@@ -201,6 +206,8 @@
   <ItemGroup>
     <ClInclude Include="CategoricalDistribution.h" />
     <ClInclude Include="CrossEntropyLoss.h" />
+    <ClInclude Include="CUDA\helper_cuda.h" />
+    <ClInclude Include="CUDA\helper_string.h" />
     <ClInclude Include="Dropout.h" />
     <ClInclude Include="Embedding.h" />
     <ClInclude Include="Exceptions.h" />
@@ -266,7 +273,11 @@
     <Text Include="TestData\XeLogits.txt" />
     <Text Include="TestData\XeTargets.txt" />
   </ItemGroup>
+  <ItemGroup>
+    <CudaCompile Include="CUDA\matrixMul.cu" />
+  </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
+    <Import Project="$(VCTargetsPath)\BuildCustomizations\CUDA 13.0.targets" />
   </ImportGroup>
 </Project>

@@ -17,6 +17,9 @@
 #include <execution>
 
 
+void CudaMatMul(const float* const h_A,const float* const h_B,float* const h_C,const unsigned int M,const unsigned int K,const unsigned int N);
+
+
 // Terminology
 // ===========
 // 
@@ -127,7 +130,7 @@ public:
 	inline bool				IsEqualTo(const NDArray& other) const;
 	inline bool				IsScalar() const;
 	inline NDArray			Log() const;
-	inline NDArray			LogSumExp() const;
+	inline NDArray			LogSoftmax(const int dim) const;
 	inline NDArray			MaskedFill(const NDArray& mask,const FP value) const;
 	inline NDArray			Max(const int dim) const;
 	inline NDArray			Mean(const bool keepdims) const;
@@ -165,12 +168,12 @@ typedef std::vector<NDArray> NDArrays;
 
 class NDData : public std::enable_shared_from_this<NDData>
 {
-	NDShape				_shape;					// Shape {i,j,k} most significant dimension at position 0 due to initialisation-list construction.
-	NDShape				_stride;				// Pointer increment required for next value in each dimension.
-	int					_size;					// Total number of elements in the array.
-	FP*					_data;					// Pointer to memory containing array elements - see InitialiseSizeAndStride for formatting.
+	NDShape				_shape;		// Shape {i,j,k} most significant dimension at position 0 due to initialisation-list construction.
+	NDShape				_stride;	// Pointer increment required for next value in each dimension.
+	int					_size;		// Total number of elements in the array.
+	FP*					_data;		// Pointer to memory containing array elements - see InitialiseSizeAndStride for formatting.
 	
-	const NDDataPtrC	_parent;				// Ponter to parent if data is not owned (i.e. this is a view).
+	const NDDataPtrC	_parent;	// Ponter to parent if data is not owned (i.e. this is a view).
 
 	// Shape iterator - iterates every dimension value combination.
 	//
@@ -491,32 +494,20 @@ class NDData : public std::enable_shared_from_this<NDData>
 		static bool thrown = false;
 		if(thrown)
 			return;
-		const FP threshold = (FP)1.0e20;
+		const FP threshold = (FP)1.0e40;
 
 		try
 		{
-			if(_parent)
+			const FP* const data = _data;
+			for(NDIterator2 iter=Iter();iter!=iter.end();++iter)
 			{
-				for(NDIterator iter=_shape;!iter.end();++iter)
-				{
-					if(isnan((*this)[iter]))
-						throw "NAN";
-					if((*this)[iter]<-threshold||(*this)[iter]>threshold)
-						throw "Too big?";
-				}
-			}
-			else
-			{
-				const FP* const data = _data;
-				for(int i=0;i<_size;++i)
-				{
-					if(isinf(data[i]))
-						continue;
-					if(isnan(data[i]))
-						throw "NAN";
-					if(data[i]<-threshold||data[i]>threshold)
-						throw "Out of range.";
-				}
+				const float v = *iter;
+				if(isinf(v))
+					continue;
+				if(isnan(v))
+					throw "NAN";
+				if(v<-threshold||v>threshold)
+					throw "Out of range.";
 			}
 		}
 		catch(...)
@@ -569,6 +560,48 @@ class NDData : public std::enable_shared_from_this<NDData>
 	}
 
 	// Template method for applying the inplace operation 'op' to each element of the arrays.
+	//
+	template<typename OP>
+	inline void Elementwise(const OP& op)
+	{
+		if(HasNaturalStride())
+		{
+			// Raw data.			
+			const FP* const end = _data+_size;
+			for(FP* iter=_data;iter!=end;++iter)
+				op(*iter);
+		}
+		else
+		{
+			// Source iterator.
+			for(NDIterator2 iter=Iter();iter!=iter.end();++iter)
+				op(*iter);
+		}
+		DebugRangeCheck();
+	}
+
+	// Template method for applying the inplace operation 'op' to each element of the arrays.
+	//
+	template<typename OP>
+	inline void Elementwise(const OP& op) const
+	{
+		if(HasNaturalStride())
+		{
+			// Raw data.			
+			const FP* const end = _data+_size;
+			for(FP* iter=_data;iter!=end;++iter)
+				op(*iter);
+		}
+		else
+		{
+			// Source iterator.
+			for(NDIterator2 iter=Iter();iter!=iter.end();++iter)
+				op(*iter);
+		}
+		DebugRangeCheck();
+	}
+
+	// Template method for applying the inplace operation 'op(v)' to each element of the arrays.
 	//
 	template<typename OP>
 	inline void Elementwise(const NDDataPtrC& v,const OP& op)
@@ -728,7 +761,7 @@ public:	// Constructors must be public to use make_shared.
 	//
 	NDData(const P&,const NDDataPtr& parent,const std::initializer_list<std::initializer_list<int>>& slicer) :
 		_parent(parent->DataOwner()),
-		_size(1),
+		_size(0),
 		_data(parent->_data)
 	{
 		_ASSERT(!_parent->_parent);
@@ -814,7 +847,8 @@ public:	// Constructors must be public to use make_shared.
 		}
 
 		// Compute '_size'.
-		for(auto length:_shape)
+		_size = 1;
+		for(int length:_shape)
 			_size *= length;
 	}
 
@@ -963,7 +997,7 @@ public:
 		// All tensors must be the same shape (except in the concatenation dimension) or be empty.
 		const NDShape shape = arrays[0]->_shape;
 		if(dim<0)
-			dim = (int)shape.size()+dim;
+			dim = shape.size()+dim;
 		if(dim>=shape.size())
 			throw InvalidDimension();
 
@@ -1124,7 +1158,7 @@ public:
 		}
 		else
 		{
-			// Assign each value in the shape - there's in implicit transposition.
+			// Assign each value in the shape - there's an implicit transposition.
 			for(NDIterator2 i=Iter(),j=v->Iter();i!=i.end();++i,++j)
 				*i = *j;
 		}
@@ -1218,18 +1252,33 @@ public:
 	//
 	int ArgMax() const
 	{
-		_ASSERT(HasNaturalStride());
-
 		// Only implemented for 1-by-n vector.
 		if(_shape[0]!=1)
 			throw IncompatibleShape();
 
 		// Scan 1 dimensional data for largest value and latch index.
 		int mj = 0;
-		for(int j=1;j<_size;++j)
-			if(_data[j]>_data[mj])
-				mj = j;
-
+		if(HasNaturalStride())
+		{
+			for(int j=1;j<_size;++j)
+				if(_data[j]>_data[mj])
+					mj = j;
+		}
+		else
+		{
+			NDIterator2 src = Iter();
+			int max_index = 0;
+			FP max_value = *src;
+			++src;
+			for(int j=1;src!=src.end();++src,++j)
+			{
+				if(*src>max_value)
+				{
+					max_value = *src;
+					mj = j;
+				}
+			}
+		}
 		return mj;
 	}
 
@@ -1310,37 +1359,45 @@ public:
 	// Clips values relative to the norm (vector length).
 	void _ClipNorm(const FP clipNorm)
 	{
-		_ASSERT(HasNaturalStride());
-
 		// Scale values if the array exceeds the clipping value.
 		const FP norm = Norm();
 		if(clipNorm<norm)
 		{
-			FP* const rData = _data;
-			for(int i=0;i<_size;++i)
-				rData[i] = rData[i]*clipNorm/norm;
+			if(HasNaturalStride())
+			{
+				FP* const rData = _data;
+				for(int i=0;i<_size;++i)
+					rData[i] = rData[i]*clipNorm/norm;
+			}
+			else
+			{
+				for(NDIterator2 iter=Iter();iter!=iter.end();++iter)
+					*iter = *iter*clipNorm/norm;
+			}
 		}
 	}
+
+
+	// Returns an array with random values set to zero with probability p.
+	//
+	void _Dropout(const NDArray& v,const FP p)
+	{
+		const FP scale = 1/(1-p);
+		std::uniform_real_distribution<FP> distribution(0.0,1.0);
+		Elementwise(v._data,[&distribution,p,scale](FP& a,const FP& b)
+		{
+			if(distribution(rnd.Generator())>=p)
+				a = b*scale;
+		});
+	}
+
 
 	// Returns an array with random values set to zero with probability p.
 	//
 	NDArray Dropout(const FP p)
 	{
-		_ASSERT(HasNaturalStride());
-
 		NDArray r = NDData::New(_shape,0.0);
-
-		const FP scale = 1/(1-p);
-
-		std::uniform_real_distribution<FP> distribution(0.0,1.0);
-		const FP* const data = _data;
-		FP* const rData = r->_data;
-		for(int i=0;i<r->_size;++i)
-		{
-			if(distribution(rnd.Generator())>=p)
-				rData[i] = data[i]*scale;
-		}
-
+		r->_Dropout(Self(),p);
 		return r;
 	}
 
@@ -1350,9 +1407,33 @@ public:
 	//
 	NDArray Softmax(int dim) const
 	{
-		// Need code here to subtract max for better numerical stability - don't want large positive numbers going in.
-		NDArray temp = Exp();				// e^z for each value.
-		return temp/temp.Sum(dim,true);		// e^z/sum(e^z) for each row/sample.		
+		// Vanilla version.
+		/*
+		NDArray temp = Exp();				// e^x for each value.
+		return temp/temp.Sum(dim,true);		// e^x/sum(e^x) for each row/sample.
+		*/
+		// Numerically stable version.
+		//	    e^x[i]		        e^(x[i]-m)
+		//  --------------- = ----------------------- = same as scaling top and bottom by some e^m.
+		//  e^x[0]...e^x[j]   e^(x[0]-m)...(e^x[j]-m)
+		const NDArray z = Sub(Max(dim));	// Subtract maximum value for each row to reduce x.
+		const NDArray exps = z.Exp();		// e^x for each value.
+		NDArray denom = exps.Sum(dim,true);	// sum(e^x) for each row.
+		denom = denom + 1e-12f;				// Add some small epsilon to avoid div 0.
+		return exps/denom;					// e^x/sum(e^x) for each row/sample.
+	}
+
+	// LogSoftmax over dimension 'dim' - numerically stable compared to log(softmax(x)).
+	// 
+	// 	       e^x[i]	
+	// log ---------------  = log(e^x[i]) - log(e^x[0]...e^x[j]) = x[i] - log(e^x[0]...e^x[j])
+	//     e^x[0]...e^x[j]
+	// 
+	NDArray LogSoftmax(const int dim) const
+	{
+		const NDArray z = Sub(Max(dim));					// Subtract maximum value for each row to reduce x.
+		const NDArray lse = z.Exp().Sum(dim,true).Log();	// log(sum(e^x)) for each row.
+		return z-lse;										// z - log(sum(e^x)) for each row.
 	}
 
 	// Elementwise inplace division.
@@ -1375,6 +1456,47 @@ public:
 	}
 
 
+	NDArray GpuMatMul(const NDArray& v) const
+	{
+		// Both arrays must be 2D.
+		if(_shape.size()!=2||v->_shape.size()!=2)
+			throw IncompatibleShape();
+
+		// TODO: Move transposition into CUDA kernal.
+		// Conditional load for A and B depending on orientation.
+
+		// Cache matrix dimensions.
+		const bool aRowMajor = HasNaturalStride();		// Make a copy if memory layout is not row major and contiguous.
+		const NDArray a = aRowMajor?NDArray(const_cast<NDData*>(this)->shared_from_this()):NDArray(NDData::New(*this));
+		const int aRows = a->_shape[0];
+		const int aCols = a->_shape[1];
+		const int aRowStride = a->_stride[0];
+		const int aColStride = a->_stride[1];
+		_ASSERT(aColStride==1);
+
+		const bool bRowMajor = v->HasNaturalStride();	// Make a copy if memory layout is not row major and contiguous.
+		const NDArray b = bRowMajor?NDArray(v):NDArray(NDData::New(*v));
+		const int bRows = b->_shape[0];
+		const int bCols = b->_shape[1];
+		const int bRowStride = b->_stride[0];
+		const int bColStride = b->_stride[1];
+		_ASSERT(bColStride==1);
+
+		// Create output shape.
+		NDShape shape(_shape);
+		shape[1] = bCols;
+		NDArray c = NDData::New(shape,0.0);
+		const int cRows = c->_shape[0];
+		const int cCols = c->_shape[1];
+		const int cRowStride = c->_stride[0];
+		const int cColStride = c->_stride[1];
+		_ASSERT(cColStride==1);
+
+		CudaMatMul(a->_data,b->_data,c->_data,aRows,aCols,bCols);
+
+		return c;
+	}
+
 	// Matrix multiplication.
 	//
 	// Sum of row*column a(ij).b(xy)=c(iy) where j=x...
@@ -1382,7 +1504,7 @@ public:
 	//  a11 a12   b11 b12   a11*b11+a12*b21 a11*b12+a12*b22
 	//  a21 a22 . b21 b22 = a21*b11+a22*b21 a12*b12+a22*b22
 	//
-	NDArray MatMul(const NDArray& v) const
+	NDArray CpuMatMul(const NDArray& v) const
 	{
 		// Both arrays must be 2D.
 		if(_shape.size()!=2||v->_shape.size()!=2)
@@ -1486,6 +1608,13 @@ public:
 	}
 
 
+	NDArray MatMul(const NDArray& v) const
+	{
+		return GpuMatMul(v);
+		//return CpuMatMul(v);
+	}
+
+
 	// Dot product for n-dimensional arrays.
 	// 
 	//		A(i,...,k) @ B(k,j) = C(i,...,j)
@@ -1577,13 +1706,11 @@ public:
 	//
 	NDArray Entropy() const
 	{
-		_ASSERT(HasNaturalStride());
-
 		switch(_shape.size())
 		{
 			case 2:
 			{
-				const int rows = _shape[0];
+				const int rows = _shape[0]; 
 				const int cols = _shape[1];
 				NDArray r = NDData::New({rows});
 				for(int i=0;i<rows;++i)
@@ -1604,19 +1731,23 @@ public:
 
 	// Elementwise equality, returns boolean array of same shape.
 	//
+	void _Equal(const NDArray& v)
+	{
+		Elementwise(v._data,[](FP& a,const FP b)
+		{
+			a = a==b;
+		});
+	}
+
+	// Elementwise equality, returns boolean array of same shape.
+	//
 	NDArray Equal(const NDArray& v) const
 	{
-		_ASSERT(HasNaturalStride());
-
 		if(_shape!=v.Shape())
 			throw IncompatibleShape();
 
-		NDArray r = NDData::New(_shape);
-		const FP* const data = _data;
-		const FP* const vData = v->_data;
-		FP* const rData = r->_data;
-		for(int i=0;i<_size;++i)
-			rData[i] = data[i]==vData[i];
+		NDArray r = NDData::New(*this);
+		r->_Equal(v);
 		return r;
 	}
 
@@ -1624,12 +1755,10 @@ public:
 	//
 	void _Exp()
 	{
-		_ASSERT(HasNaturalStride());
-
-		FP* const data = _data;
-		for(int i=0;i<_size;++i)
-			data[i] = exp(data[i]);
-
+		Elementwise([](FP& v)
+		{
+			v = exp(v);
+		});
 		DebugRangeCheck();
 	}
 
@@ -1687,16 +1816,22 @@ public:
 		return r;
 	}
 
+	// Elementwise inplace greater, updates self with boolean values.
+	//
+	void _Greater(const FP v) const
+	{
+		Elementwise([v](FP& a)
+		{
+			a = a>v;
+		});
+	}
+
 	// Elementwise greater, returns boolean array of same shape.
 	//
 	NDArray Greater(const FP v) const
 	{
-		_ASSERT(HasNaturalStride());
-
 		NDArray r = NDData::New(*this);
-		FP* const rData = r->_data;
-		for(int i=0;i<_size;++i)
-			rData[i] = rData[i]>v;
+		r->_Greater(v);
 		return r;
 	}
 
@@ -1713,7 +1848,7 @@ public:
 			const FP d = abs(a-b);
 			if(d>=0.0001||isnan(d))
 				r = false;
-		});				
+		});
 		return r;
 	}
 
@@ -1729,15 +1864,22 @@ public:
 		return true;
 	}
 
+	// Elementwise inplace log.
+	//
+	void _Log()
+	{
+		Elementwise([](FP& v)
+		{
+			v = log(v);
+		});
+	}
+
 	// Elementwise log.
 	//
 	NDArray Log() const
 	{
-		_ASSERT(HasNaturalStride());
-
-		NDArray r = NDData::New(_shape);
-		for(int i=0;i<_size;++i)
-			r->_data[i] = log(_data[i]);
+		NDArray r = NDData::New(*this);
+		r->_Log();
 		return r;
 	}
 
@@ -1790,9 +1932,12 @@ public:
 
 	// Max value along dimension.
 	//
-	NDArray Max(const int dim) const
+	NDArray Max(int dim) const
 	{
-		_ASSERT(dim>=0&&dim<_shape.size());
+		if(dim<0)
+			dim += _shape.size();
+		if(dim>=_shape.size())
+			throw InvalidDimension();
 
 		// Create the new shape and result data where the aggregation dimension is 1.
 		NDShape newShape(_shape);
@@ -1934,16 +2079,24 @@ public:
 		return r;
 	}
 
-	// Returns the Euclidean norm - the length of the vector/distance of the point from the origin. Extendion of Pythagorean theorem to n dimensions, square root of sum of squares.
+	// Returns the Euclidean norm. 
+	//  The length of the vector/distance of the point from the origin. 
+	//  i.e. Extendion of Pythagorean theorem to n dimensions, square root of sum of squares.
 	//
 	FP Norm() const
 	{
-		_ASSERT(HasNaturalStride());
-
-		FP* const rData = _data;
 		FP ss = 0.0;
-		for(int i=0;i<_size;++i)
-			ss += pow(rData[i],FP(2));
+		if(HasNaturalStride())
+		{
+			FP* const rData = _data;
+			for(int i=0;i<_size;++i)
+				ss += pow(rData[i],FP(2));
+		}
+		else
+		{
+			for(NDIterator2 iter=Iter();iter!=iter.end();++iter)
+				ss += pow(*iter,FP(2));
+		}
 		return sqrt(ss);
 	}
 
@@ -1973,18 +2126,19 @@ public:
 	//
 	void _Pow(const FP exponent)
 	{
-		_ASSERT(HasNaturalStride());
-
-		FP* const rData = _data;
 		if(exponent==2.0)
 		{
-			for(int i=0;i<_size;++i)
-				rData[i] *= rData[i];
+			Elementwise([](FP& v)
+			{
+				v *= v;
+			});
 		}
 		else
 		{
-			for(int i=0;i<_size;++i)
-				rData[i] = pow(rData[i],exponent);
+			Elementwise([exponent](FP& v)
+			{
+				v = pow(v,exponent);
+			});
 		}
 	}
 
@@ -2117,7 +2271,18 @@ public:
 		if(size!=_size)
 			throw IncompatibleShape();
 
-		return NDData::New(*this,shape);
+		// Copy elements to new array with new shape.
+		if(HasNaturalStride())
+		{
+			return NDData::New(*this,shape);
+		}
+		else
+		{
+			NDArray r = NDData::New(shape);
+			for(NDIterator2 src=Iter(),dst=r->Iter();src!=src.end();++src,++dst)
+				*dst = *src;
+			return r;
+		}
 	}
 
 	NDArray Reshape(const std::initializer_list<int>& shape) const
@@ -2217,13 +2382,12 @@ public:
 
 	NDArray Sum() const
 	{
-		_ASSERT(HasNaturalStride());
-
 		NDArray r = NDData::New({1},0.0);
 		FP& rData = r->_data[0];
-		const FP* vData = _data;
-		for(int i=0;i<_size;++i)
-			rData += vData[i];
+		Elementwise([&rData](FP& v)
+		{
+			rData += v;
+		});
 		return r;
 	}
 
@@ -2233,11 +2397,13 @@ public:
 	{
 		if(dim<0)
 			dim += _shape.size();
+		if(dim>=_shape.size())
+			throw InvalidDimension();
 
 		// Create the new shape and result data where the aggregation dimension is 1.
 		NDShape newShape(_shape);
 		newShape[dim] = 1;
-		NDArray r = NDData::New(newShape);
+		NDArray r = NDData::New(newShape,0.0f);
 
 		// Aggreate along the dimension.
 		Aggregate(r,dim,[](FP& acc,const FP& value)
@@ -2291,8 +2457,6 @@ public:
 	//
 	NDArray Tril() const
 	{
-		_ASSERT(HasNaturalStride());
-
 		// Only implemented for 2D array.
 		if(_shape.size()!=2)
 			throw IncompatibleShape();
@@ -2302,11 +2466,13 @@ public:
 		const FP* vData = _data;
 		const int rows = _shape[0];
 		const int cols = _shape[1];
+		const int row_stride = _stride[0];
+		const int col_stride = _stride[1];
 		for(int i=0;i<rows;++i)
 		{
 			int j=0;
 			for(;j<=i;++j)
-				*rData++ = vData[i+j*rows];
+				*rData++ = vData[i*row_stride+j*col_stride];
 			for(;j<cols;++j)
 				*rData++ = 0.0;
 		}
@@ -2982,6 +3148,11 @@ bool NDArray::IsScalar() const
 NDArray NDArray::Log() const
 {
 	return _data->Log();
+}
+
+NDArray NDArray::LogSoftmax(const int dim) const
+{
+	return _data->LogSoftmax(dim);
 }
 
 NDArray NDArray::MaskedFill(const NDArray& mask,const FP value) const

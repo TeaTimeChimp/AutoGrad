@@ -28,6 +28,12 @@
     <Filter Include="Source Files\Kernels">
       <UniqueIdentifier>{763e1dbe-a416-48e6-ab39-709990dbf270}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Header Files\CUDA">
+      <UniqueIdentifier>{7738df4b-dd81-4e49-b674-7996264ca01c}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Source Files\CUDA">
+      <UniqueIdentifier>{13a56b53-657f-4c72-8124-611bf05159ca}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="AutoGrad.cpp">
@@ -338,6 +344,12 @@
     <ClInclude Include="Test_Broadcast.h">
       <Filter>Header Files\Test</Filter>
     </ClInclude>
+    <ClInclude Include="CUDA\helper_cuda.h">
+      <Filter>Header Files\CUDA</Filter>
+    </ClInclude>
+    <ClInclude Include="CUDA\helper_string.h">
+      <Filter>Header Files\CUDA</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <Text Include="TestData\XeLogits.txt">
@@ -349,5 +361,10 @@
     <Text Include="TestData\XeGradients.txt">
       <Filter>TestData</Filter>
     </Text>
+  </ItemGroup>
+  <ItemGroup>
+    <CudaCompile Include="CUDA\matrixMul.cu">
+      <Filter>Source Files\CUDA</Filter>
+    </CudaCompile>
   </ItemGroup>
 </Project>

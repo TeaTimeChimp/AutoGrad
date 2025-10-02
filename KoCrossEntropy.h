@@ -8,7 +8,7 @@ class KoCrossEntropy : public Kernel
 	NDArray	_targets;
 
 	NDArray	_targetsOH;		// One hot encoded targets.
-	NDArray	_softmax;
+	NDArray	_logp;			// Log probability of logits.
 
 public:
 				KoCrossEntropy(const NDArray& targets);
