@@ -503,9 +503,9 @@ class NDData : public std::enable_shared_from_this<NDData>
 			{
 				const float v = *iter;
 				if(isinf(v))
-					continue;
+					std::cout<<"Value is inf."<<std::endl;	// Acceptable in tril.
 				if(isnan(v))
-					throw "NAN";
+					std::cout<<"Value is nan."<<std::endl;	// Acceptable in var({1,1}) - single value.
 				if(v<-threshold||v>threshold)
 					throw "Out of range.";
 			}
@@ -1054,12 +1054,13 @@ public:
 	// 
 	//  2) From right-to-left dimension of size 1 are replicated to match 'target'.
 	// 
+	//  'fixed_dims' is the number of least significant dimensions that must not be changed.
+	//		This is currently only used to prevent broadcasting the last 2 dimensions in the case of 3d dot product.
+	// 
 	// If 'target' has less dimensions, or any dimension post expansion does not match then broadcasting fails
 	// and a version of 'this' returned with the shape at the point of failure.
 	// 
-	// NOTE: At present copies of 'this' array are created when the shape is modified.
-	//
-	const NDArray Broadcast(const NDDataPtrC& target)
+	const NDArray Broadcast(const NDDataPtrC& target,const int fixed_dims)
 	{
 		// If the arrays are the same shape nothing needs doing.
 		const NDShape& shape = Shape();
@@ -1081,8 +1082,10 @@ public:
 			data->_stride.insert(data->_stride.begin(),0);	// Could be 1 or 0, but use 0 to indicate this is a fabricated dimension.
 		}
 
-		// Expand unit length dimensions to match the target.
-		for(int dim=(int)data->_shape.size()-1;dim>=0;--dim)
+		// From right(least significant) to left(most significant) expand unit length dimensions to match the target.
+		// 'fixed_dims' is to prevent broadcast touching the last 2 dimension in the case of 3d dot product.
+		// 
+		for(int dim=(int)data->_shape.size()-1-fixed_dims;dim>=0;--dim)
 		{
 			if(data->_shape[dim]==1&&targetShape[dim]>1)
 			{
@@ -1095,9 +1098,9 @@ public:
 		return data;
 	}
 
-	const NDArray Broadcast(const NDDataPtrC& target) const
+	const NDArray Broadcast(const NDDataPtrC& target,const int fixed_dims=0) const
 	{
-		return const_cast<NDData*>(this)->Broadcast(target);
+		return const_cast<NDData*>(this)->Broadcast(target,fixed_dims);
 	}
 
 	// Broadcasts a and b together.
@@ -1636,7 +1639,7 @@ public:
 				throw NotImplemented();
 
 			// Broadcast 'this' to v - ensuring the shape has the same size and batch dimensions match (batch,i,k)@(batch,k,j).
-			const NDArray self = Broadcast(v._data);
+			const NDArray self = Broadcast(v._data,2);	// Don't touch the 2D matrix dimensions.
 			//self->Print(std::cout);
 			
 			// Create result shape - all dimensions from self and last dimension from v.

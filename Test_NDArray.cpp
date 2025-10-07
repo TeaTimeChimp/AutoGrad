@@ -396,10 +396,10 @@ namespace
 			print(z);
 			Assert(z.IsEqualTo(NDData::New({4,3},
 				{
-					1.0 ,4.0  ,9.0  ,
-					1.6 ,2.5  ,3.6  ,
-					0.49,0.64 ,0.81 ,
-					0.1 ,0.121,0.144
+					1.0f ,4.0f  ,9.0f  ,
+					1.6f ,2.5f  ,3.6f  ,
+					0.49f,0.64f ,0.81f ,
+					0.1f ,0.121f,0.144f
 				})),"matirx/row.");
 		}
 	}
@@ -947,6 +947,42 @@ namespace
 				})),"(2,2,3)@(2,3,4) = (2,2,4)");
 		}
 
+		{
+			// (2,1,3)@(2,3,1)	- with unit dimension to flush out broadcasting issues.
+			NDArray x = NDData::New({2,1,3},
+				{
+					111,112,113,
+				
+					211,212,213,
+				});
+			print(x.Shape());
+			print(x);
+
+			NDArray y = NDData::New({2,3,1},
+				{
+					111,
+					121,
+					131,
+
+					211,
+					221,
+					231
+				});
+			print(y.Shape());
+			print(y);
+
+			// (2,1,3)@(2,3,1) = (2,1,1)
+			NDArray z = x.Dot(y);
+			print(z.Shape());
+			print(z);
+			Assert(z.IsEqualTo(NDData::New({2,1,1},
+				{
+					 40676,
+
+					140576
+				})),"(2,1,3)@(2,3,1) = (2,1,1)");
+		}
+
 		if(false)	// Lost test data file.s
 		{
 			NDArray x = NDData::Load("TestData\\MHA_heads(x)_0.gradient.txt");				// Inflowing gradient.
@@ -1305,7 +1341,7 @@ namespace
 	{
 		{
 			NDArray x = NDData::LoadWithImplicitShape("TestData\\Load_Scalar.txt");
-			Assert(x.IsEqualTo(NDData::New({},{1.234})),"scalar");
+			Assert(x.IsEqualTo(NDData::New({},{1.234f})),"scalar");
 		}
 
 		{
