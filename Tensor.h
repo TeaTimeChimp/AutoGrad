@@ -542,7 +542,7 @@ public:
 		TensorPtr r = Sub(Mean(dim,true));
 		r = r->Pow(2.0);
 		r = r->Sum(dim,keepDim);
-		r = r->Div(Tensor::New(NDData::New({},Shape()[dim]-FP(1.0))));
+		r = r->Div(Tensor::New(NDData::New({},Shape()[dim]-FP(correction))));
 		return r;
 	}
 

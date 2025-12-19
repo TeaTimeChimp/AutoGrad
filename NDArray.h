@@ -502,10 +502,10 @@ class NDData : public std::enable_shared_from_this<NDData>
 			for(NDIterator2 iter=Iter();iter!=iter.end();++iter)
 			{
 				const float v = *iter;
-				if(isinf(v))
-					std::cout<<"Value is inf."<<std::endl;	// Acceptable in tril.
-				if(isnan(v))
-					std::cout<<"Value is nan."<<std::endl;	// Acceptable in var({1,1}) - single value.
+				//if(isinf(v))
+					//std::cout<<"Value is inf."<<std::endl;	// Acceptable in tril.
+				//if(isnan(v))
+					//std::cout<<"Value is nan."<<std::endl;	// Acceptable in var({1,1}) - single value.
 				if(v<-threshold||v>threshold)
 					throw "Out of range.";
 			}
