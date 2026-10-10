@@ -3,8 +3,14 @@
 // Low-latency parallel-for.
 //
 // Persistent worker threads spin briefly waiting for work, then park with WaitOnAddress, so dispatching a job costs
-// microseconds rather than the milliseconds of a condition-variable queue. Only one job runs at a time; a call made
-// while the pool is busy (e.g. from inside another parallel job) simply runs on the calling thread.
+// microseconds rather than the milliseconds of a condition-variable queue. A job finishes as soon as all of its
+// indices are done; it does not wait for every worker to notice it, so a worker that the OS has descheduled cannot
+// stall the caller. Only one job runs at a time; a call made while the pool is busy (e.g. from inside another
+// parallel job) simply runs on the calling thread.
+//
+// Job publication uses a sequence number: odd while the caller is rewriting the job description, even once it is
+// published. A worker registers in _inflight and then re-checks the sequence, so it either sees a complete job or
+// backs off; the caller only rewrites the job once no worker is registered.
 
 #include <Windows.h>
 #include <synchapi.h>
@@ -24,10 +30,11 @@ class ParallelPool
 
 	std::vector<std::thread>	_threads;
 	std::mutex					_submit;			// Held while a job is running.
-	std::atomic<unsigned>		_generation = 0;	// Incremented to publish a new job.
+	std::atomic<unsigned>		_sequence = 0;		// Odd: job being written. Even: job published.
+	std::atomic<int>			_inflight = 0;		// Workers currently reading the job description.
 	std::atomic<bool>			_stop = false;
 	std::atomic<int>			_next = 0;			// Next index to claim.
-	std::atomic<int>			_active = 0;		// Workers still inside the current job.
+	std::atomic<int>			_remaining = 0;		// Indices not yet completed.
 	int							_end = 0;
 	int							_chunk = 1;
 	const void*					_fn = nullptr;
@@ -39,10 +46,12 @@ class ParallelPool
 	{
 		for(;;)
 		{
-			const int i = _next.fetch_add(_chunk,std::memory_order_relaxed);
+			const int i = _next.fetch_add(_chunk);
 			if(i>=_end)
 				break;
-			_trampoline(_fn,i,(std::min)(i+_chunk,_end));
+			const int e = (std::min)(i+_chunk,_end);
+			_trampoline(_fn,i,e);
+			_remaining.fetch_sub(e-i);
 		}
 	}
 
@@ -52,21 +61,29 @@ class ParallelPool
 		unsigned seen = 0;
 		for(;;)
 		{
-			// Spin for a while, then sleep until the generation changes.
+			// Wait for a newly published (even) sequence number.
 			int spins = 0;
-			unsigned g;
-			while((g = _generation.load(std::memory_order_acquire))==seen)
+			unsigned s;
+			while((s = _sequence.load())==seen||(s&1))
 			{
 				if(++spins<20000)
 					_mm_pause();
 				else
-					WaitOnAddress(&_generation,&seen,sizeof(seen),INFINITE);
+				{
+					WaitOnAddress(&_sequence,&s,sizeof(s),10);
+					spins = 0;
+				}
+				if(_stop)
+					return;
 			}
-			seen = g;
 			if(_stop)
 				return;
-			RunChunks();
-			_active.fetch_sub(1,std::memory_order_acq_rel);
+
+			_inflight.fetch_add(1);
+			if(_sequence.load()==s)
+				RunChunks();				// Job description is stable while we're registered.
+			_inflight.fetch_sub(1);
+			seen = s;
 		}
 	}
 
@@ -81,8 +98,8 @@ public:
 	~ParallelPool()
 	{
 		_stop = true;
-		_generation.fetch_add(1,std::memory_order_release);
-		WakeByAddressAll(&_generation);
+		_sequence.fetch_add(2);
+		WakeByAddressAll(&_sequence);
 		for(auto& t:_threads)
 			t.join();
 	}
@@ -105,21 +122,24 @@ public:
 			return;
 		}
 
+		// Unpublish, wait for stragglers from the previous job to leave, then write the new job.
+		_sequence.fetch_add(1);
+		while(_inflight.load()>0)
+			_mm_pause();
 		_fn = &fn;
 		_trampoline = [](const void* f,int b,int e){(*(const F*)f)(b,e);};
 		_end = end;
 		_chunk = (std::max)(grain,n/(Threads()*4));
-		_next.store(begin,std::memory_order_relaxed);
-		_active.store((int)_threads.size(),std::memory_order_relaxed);
-		_generation.fetch_add(1,std::memory_order_release);
-		WakeByAddressAll(&_generation);
+		_remaining.store(n);
+		_next.store(begin);
+		_sequence.fetch_add(1);
+		WakeByAddressAll(&_sequence);
 
-		// The caller works too, then waits for the stragglers.
-		const bool wasWorker = _isWorker;
+		// The caller works too, then waits until every index is done.
 		_isWorker = true;
 		RunChunks();
-		_isWorker = wasWorker;
-		while(_active.load(std::memory_order_acquire)>0)
+		_isWorker = false;
+		while(_remaining.load()>0)
 			_mm_pause();
 		_submit.unlock();
 	}

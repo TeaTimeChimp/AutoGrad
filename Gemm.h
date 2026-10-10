@@ -305,6 +305,74 @@ namespace gemm
 	}
 
 
+	// op(B) (KxN) packed once into NR-column panels per KC-deep block, for reuse across many multiplies
+	// (e.g. a recurrent weight matrix used at every timestep).
+	struct PackedB
+	{
+		int K = 0,N = 0;
+		std::vector<float> data;	// [kblock][panel][kc][NR]
+
+		void Pack(const float* B,const int ldb,const bool transB,const int K_,const int N_)
+		{
+			K = K_;
+			N = N_;
+			const int panels = (N+NR-1)/NR;
+			data.resize((size_t)K*panels*NR);
+			ParallelFor(0,(K+KC-1)/KC,[&](const int kb)
+			{
+				const int k0 = kb*KC;
+				const int kc = (std::min)(KC,K-k0);
+				PackB(B,ldb,transB,k0,0,kc,N,data.data()+(size_t)k0*panels*NR);
+			});
+		}
+
+		const float* Block(const int k0) const
+		{
+			return data.data()+(size_t)k0*((N+NR-1)/NR)*NR;
+		}
+	};
+
+
+	// C(MxN) = alpha*op(A)@B + beta*C with B pre-packed, parallel over column panels. Suits small M.
+	inline void SgemmPacked(const bool transA,const int M,const float alpha,const float* A,const int lda,const PackedB& B,
+		const float beta,float* C,const int ldc)
+	{
+		const int K = B.K;
+		const int N = B.N;
+		const int panels = (N+NR-1)/NR;
+		const int panelsPerTask = (std::max)(1,(std::min)(4,panels/ParallelPool::Get().Threads()));
+		const int tasks = (panels+panelsPerTask-1)/panelsPerTask;
+		ParallelFor(0,tasks,[&](const int task)
+		{
+			thread_local std::vector<float> aBuf;
+			aBuf.resize((size_t)MC*KC);
+			const int p0 = task*panelsPerTask;
+			const int p1 = (std::min)(panels,p0+panelsPerTask);
+			for(int i0=0;i0<M;i0+=MC)
+			{
+				const int mc = (std::min)(MC,M-i0);
+				for(int k0=0;k0<K;k0+=KC)
+				{
+					const int kc = (std::min)(KC,K-k0);
+					PackA(A,lda,transA,i0,k0,mc,kc,aBuf.data());
+					const float* bBlock = B.Block(k0);
+					for(int p=p0;p<p1;++p)
+					{
+						const int jp = p*NR;
+						const int cols = (std::min)(NR,N-jp);
+						const float* bp = bBlock+(size_t)p*kc*NR;
+						for(int ip=0;ip<mc;ip+=MR)
+						{
+							const int rows = (std::min)(MR,mc-ip);
+							Kernel(kc,aBuf.data()+(size_t)(ip/MR)*kc*MR,bp,C+(size_t)(i0+ip)*ldc+jp,ldc,rows,cols,alpha,beta,k0==0);
+						}
+					}
+				}
+			}
+		});
+	}
+
+
 	template<typename T>
 	inline void Gemm(const bool transA,const bool transB,const int M,const int N,const int K,const T alpha,
 		const T* A,const int lda,const T* B,const int ldb,const T beta,T* C,const int ldc,const bool parallel=true)
