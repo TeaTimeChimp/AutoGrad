@@ -57,7 +57,8 @@ class Muon : public Optimiser
 	}
 
 #ifdef AUTOGRAD_CUDA
-	std::vector<NDArray>	_dbuf;	// Device momentum buffers.
+	std::vector<NDArray>	_dbuf;	// Device momentum buffers (default-constructed NDArrays are empty handles,
+	std::vector<bool>		_dinit;	// so track which ones have been allocated).
 
 	// Newton-Schulz on the device for an r x c (r<=c) matrix X (in place).
 	static void NewtonSchulzGpu(float* X,const int r,const int c,float* A,float* B,float* T)
@@ -80,10 +81,14 @@ class Muon : public Optimiser
 		auto& p = _parameters[k];
 		const size_t n = (size_t)rows*cols;
 		if(_dbuf.size()<_parameters.size())
+		{
 			_dbuf.resize(_parameters.size());
-		if(_dbuf[k].Size()==0)
+			_dinit.resize(_parameters.size(),false);
+		}
+		if(!_dinit[k])
 		{
 			_dbuf[k]._Attach(NDData::New({rows,cols},0.0));
+			_dinit[k] = true;
 		}
 		const int r = (std::min)(rows,cols);
 		const int c = (std::max)(rows,cols);
