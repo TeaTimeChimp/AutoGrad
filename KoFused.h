@@ -1211,3 +1211,78 @@ public:
 	}
 #endif
 };
+
+
+// Inverted dropout with a stateless hashed mask: element i is kept if hash(seed,i) >= p, and kept values are scaled
+// by 1/(1-p). The mask is recomputed in the backward pass instead of stored, and is identical on CPU and GPU.
+class KoDropoutHashed : public Kernel
+{
+	const FP		_p;
+	const unsigned	_seed;
+
+public:
+	static float Uniform(const unsigned seed,const unsigned long long i)
+	{
+		unsigned h = (unsigned)i*0x9E3779B1u^seed^(unsigned)(i>>32)*0x7FEB352Du;
+		h ^= h>>16; h *= 0x85EBCA6Bu; h ^= h>>13; h *= 0xC2B2AE35u; h ^= h>>16;
+		return h*(1.0f/4294967296.0f);
+	}
+
+	KoDropoutHashed(const FP p,const unsigned seed) :
+		_p(p),
+		_seed(seed)
+	{
+	}
+
+	NDArray Forward(const NDArrays& in) override
+	{
+		DISPATCH_FORWARD
+		return Apply(in[0]);
+	}
+
+	NDArrays Backward(const NDArray& gradient,const NDArrays& in) override
+	{
+		DISPATCH_BACKWARD
+		return {Apply(gradient)};
+	}
+
+private:
+	NDArray Apply(const NDArray& a) const
+	{
+		const NDArray x = a.Contiguous();
+		NDArray y = NDData::New(x.Shape());
+		const FP* xr = x.Raw();
+		FP* yr = y.Raw();
+		const FP p = _p;
+		const unsigned seed = _seed;
+		ParallelForRange(0,x.Size(),16384,[=](int b,int e)
+		{
+			for(int i=b;i<e;++i)
+				yr[i] = Uniform(seed,i)>=p?xr[i]/(FP(1)-p):FP(0);
+		});
+		return y;
+	}
+
+public:
+#ifdef AUTOGRAD_CUDA
+	GPU_FORWARD
+
+	NDArray ForwardGpu(const NDArrays& in)
+	{
+		return ApplyGpu(in[0]);
+	}
+
+	NDArrays BackwardGpu(const NDArray& gradient,const NDArrays&)
+	{
+		return {ApplyGpu(gradient)};
+	}
+
+	NDArray ApplyGpu(const NDArray& a) const
+	{
+		const NDArray x = a.Contiguous();
+		NDArray y = NDData::New(x.Shape());
+		dev::Dropout(x.Dev(),y.DevWrite(),x.Size(),float(_p),_seed);
+		return y;
+	}
+#endif
+};

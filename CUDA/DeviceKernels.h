@@ -70,3 +70,9 @@ namespace dev
 	void Transpose(const float* src,float* dst,int rows,int cols);
 	void Axpy(float* y,const float* x,float a,size_t n);					// y += a*x
 }
+
+namespace dev
+{
+	// y = x * keep(i)/(1-p) where keep(i) = hash(seed,i) >= p (same hash as the CPU path).
+	void Dropout(const float* x,float* y,size_t n,float p,unsigned seed);
+}

@@ -826,3 +826,26 @@ namespace dev
 		TransposeKernel<<<grid,dim3(32,32)>>>(src,dst,rows,cols);
 	}
 }
+
+
+__host__ __device__ __forceinline__ float DropoutUniform(const unsigned seed,const unsigned long long i)
+{
+	unsigned h = (unsigned)i*0x9E3779B1u^seed^(unsigned)(i>>32)*0x7FEB352Du;
+	h ^= h>>16; h *= 0x85EBCA6Bu; h ^= h>>13; h *= 0xC2B2AE35u; h ^= h>>16;
+	return h*(1.0f/4294967296.0f);
+}
+
+__global__ void DropoutKernel(const float* x,float* y,const size_t n,const float p,const unsigned seed)
+{
+	const size_t i = (size_t)blockIdx.x*blockDim.x+threadIdx.x;
+	if(i<n)
+		y[i] = DropoutUniform(seed,i)>=p?x[i]/(1.0f-p):0.0f;
+}
+
+namespace dev
+{
+	void Dropout(const float* x,float* y,size_t n,float p,unsigned seed)
+	{
+		DropoutKernel<<<Blocks(n,256),256>>>(x,y,n,p,seed);
+	}
+}
