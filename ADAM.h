@@ -46,6 +46,16 @@ public:
 			if(!p->Gradient())
 				continue;
 
+#ifdef AUTOGRAD_CUDA
+			if(NDConfig::useGpu)
+			{
+				const FP decay = p->Data().Shape().size()>=2?FP(1)-_lr*weightDecay:FP(1);
+				dev::Adam(p->Data().DevModify(),p->Gradient()->Data().DevModify(),p->Momentum()->Data().DevModify(),
+					p->Momentum2()->Data().DevModify(),p->Data().Size(),_lr,_beta1,_beta2,_eps,c1,c2,decay);
+				p->ClearChildren();
+				continue;
+			}
+#endif
 			// Fused update over raw memory (parameters, gradients and moments are all contiguous).
 			const int n = p->Data().Size();
 			FP* const w = p->Data().Raw();

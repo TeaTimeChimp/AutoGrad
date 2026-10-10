@@ -7,3 +7,8 @@ typedef double FP;
 #else
 typedef float FP;
 #endif
+
+// Device kernels are float only.
+#if defined(AUTOGRAD_DOUBLE)&&defined(AUTOGRAD_CUDA)
+#undef AUTOGRAD_CUDA
+#endif

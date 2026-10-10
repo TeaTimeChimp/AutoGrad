@@ -72,6 +72,10 @@ class Tensor : public std::enable_shared_from_this<class Tensor>
 
 	static NDArray ProfiledForward(const KernelPtr& kernel,const NDArrays& inputs)
 	{
+		if(NDConfig::useGpu&&!kernel->DeviceAware())
+			for(auto& in:inputs)
+				if(in.Size()>0)
+					in.EnsureHost();
 		if(!Profiler::Enabled())
 			return kernel->Forward(inputs);
 		const std::string name = std::string(typeid(*kernel).name()+6)+".Forward";	// Skip "class ".
@@ -83,6 +87,13 @@ class Tensor : public std::enable_shared_from_this<class Tensor>
 
 	static NDArrays ProfiledBackward(const KernelPtr& kernel,const NDArray& gradient,const NDArrays& inputs)
 	{
+		if(NDConfig::useGpu&&!kernel->DeviceAware())
+		{
+			gradient.EnsureHost();
+			for(auto& in:inputs)
+				if(in.Size()>0)
+					in.EnsureHost();
+		}
 		if(!Profiler::Enabled())
 			return kernel->Backward(gradient,inputs);
 		const std::string name = std::string(typeid(*kernel).name()+6)+".Backward";
@@ -268,6 +279,23 @@ public:
 				// Kernels may hand the same buffer to several creators (e.g. KoAdd passes its incoming gradient to both
 				// inputs), so an in-place += here could silently change another tensor's gradient. Only add in place
 				// into buffers this tensor owns (parameters, see above); otherwise allocate the sum.
+#ifdef AUTOGRAD_CUDA
+				if(_gradient->_data.OnDevice()||gradient->_data.OnDevice())
+				{
+					// Device-resident gradients (both contiguous, same shape).
+					const NDArray b = gradient->_data.Contiguous();
+					if(_creators.size()==0)
+						dev::AddInPlace(_gradient->_data.DevModify(),b.Dev(),b.Size());
+					else
+					{
+						const NDArray a = _gradient->_data.Contiguous();
+						NDArray sum = NDData::New(a.Shape());
+						dev::Add(a.Dev(),b.Dev(),sum.DevWrite(),a.Size());
+						_gradient = Tensor::New(sum);
+					}
+				}
+				else
+#endif
 				if(_creators.size()==0)
 					_gradient->_data += gradient->_data;
 				else
@@ -381,6 +409,7 @@ public:
 
 	const FP Item() const
 	{
+		_data.EnsureHost();
 		return _data[{}];
 	}
 

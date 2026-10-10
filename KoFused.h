@@ -17,6 +17,18 @@
 #include "ParallelFor.h"
 
 
+// GPU dispatch: in a CUDA build with NDConfig::useGpu set, kernels run their *Gpu variant on device-resident arrays.
+#ifdef AUTOGRAD_CUDA
+#define GPU_FORWARD		bool DeviceAware() const override { return true; }
+#define DISPATCH_FORWARD	if(NDConfig::useGpu) return ForwardGpu(in);
+#define DISPATCH_BACKWARD	if(NDConfig::useGpu) return BackwardGpu(gradient,in);
+#else
+#define GPU_FORWARD
+#define DISPATCH_FORWARD
+#define DISPATCH_BACKWARD
+#endif
+
+
 namespace fused
 {
 	// Number of rows when the last dimension is treated as the row length.
@@ -67,6 +79,7 @@ public:
 
 	NDArray Forward(const NDArrays& in) override
 	{
+		DISPATCH_FORWARD
 		const NDArray x = in[0].Contiguous();
 		const NDArray W = in[1].Contiguous();
 		const int K = fused::Cols(x);
@@ -91,6 +104,7 @@ public:
 
 	NDArrays Backward(const NDArray& gradient,const NDArrays& in) override
 	{
+		DISPATCH_BACKWARD
 		const NDArray g = gradient.Contiguous();
 		const NDArray x = in[0].Contiguous();
 		const NDArray W = in[1].Contiguous();
@@ -108,6 +122,46 @@ public:
 		fused::ColumnSum(g.Raw(),M,N,db.Raw());											// db = sum over rows of g
 		return {dx,dW,db};
 	}
+
+#ifdef AUTOGRAD_CUDA
+	GPU_FORWARD
+
+	NDArray ForwardGpu(const NDArrays& in)
+	{
+		const NDArray x = in[0].Contiguous();
+		const NDArray W = in[1].Contiguous();
+		const int K = fused::Cols(x);
+		const int M = fused::Rows(x);
+		const int N = W.Shape()[1];
+		NDShape shape = x.Shape();
+		shape[shape.size()-1] = N;
+		NDArray y = NDData::New(shape);
+		float* yd = y.DevWrite();
+		if(_bias)
+			dev::FillRows(yd,in[2].Contiguous().Dev(),M,N);
+		dev::Gemm(false,false,M,N,K,1.0f,x.Dev(),K,W.Dev(),N,_bias?1.0f:0.0f,yd,N);
+		return y;
+	}
+
+	NDArrays BackwardGpu(const NDArray& gradient,const NDArrays& in)
+	{
+		const NDArray g = gradient.Contiguous();
+		const NDArray x = in[0].Contiguous();
+		const NDArray W = in[1].Contiguous();
+		const int K = fused::Cols(x);
+		const int M = fused::Rows(x);
+		const int N = W.Shape()[1];
+		NDArray dx = NDData::New(x.Shape());
+		NDArray dW = NDData::New(W.Shape());
+		dev::Gemm(false,true,M,K,N,1.0f,g.Dev(),N,W.Dev(),N,0.0f,dx.DevWrite(),K);
+		dev::Gemm(true,false,K,N,M,1.0f,x.Dev(),K,g.Dev(),N,0.0f,dW.DevWrite(),N);
+		if(!_bias)
+			return {dx,dW};
+		NDArray db = NDData::New(in[2].Shape());
+		dev::ColumnSum(g.Dev(),M,N,db.DevWrite());
+		return {dx,dW,db};
+	}
+#endif
 };
 
 
@@ -126,6 +180,7 @@ public:
 
 	NDArray Forward(const NDArrays& in) override
 	{
+		DISPATCH_FORWARD
 		const NDArray x = in[0].Contiguous();
 		const FP* gamma = in[1].Contiguous().Raw();
 		const FP* beta = in[2].Contiguous().Raw();
@@ -165,6 +220,7 @@ public:
 
 	NDArrays Backward(const NDArray& gradient,const NDArrays& in) override
 	{
+		DISPATCH_BACKWARD
 		const NDArray g = gradient.Contiguous();
 		const NDArray x = in[0].Contiguous();
 		const FP* gamma = in[1].Contiguous().Raw();
@@ -217,6 +273,38 @@ public:
 		});
 		return {dx,dgamma,dbeta};
 	}
+
+#ifdef AUTOGRAD_CUDA
+	GPU_FORWARD
+
+	NDArray _dmean,_drstd;
+
+	NDArray ForwardGpu(const NDArrays& in)
+	{
+		const NDArray x = in[0].Contiguous();
+		const int C = fused::Cols(x);
+		const int M = fused::Rows(x);
+		// NDArray::operator= copies elements into an existing array, so members are (re)bound with _Attach.
+		_dmean._Attach(NDData::New(NDShape{M}));
+		_drstd._Attach(NDData::New(NDShape{M}));
+		NDArray y = NDData::New(x.Shape());
+		dev::LayerNormForward(x.Dev(),in[1].Contiguous().Dev(),in[2].Contiguous().Dev(),y.DevWrite(),_dmean.DevWrite(),_drstd.DevWrite(),M,C,_eps);
+		return y;
+	}
+
+	NDArrays BackwardGpu(const NDArray& gradient,const NDArrays& in)
+	{
+		const NDArray g = gradient.Contiguous();
+		const NDArray x = in[0].Contiguous();
+		const int C = fused::Cols(x);
+		const int M = fused::Rows(x);
+		NDArray dx = NDData::New(x.Shape());
+		NDArray dg = NDData::New(in[1].Shape());
+		NDArray db = NDData::New(in[2].Shape());
+		dev::LayerNormBackward(x.Dev(),in[1].Contiguous().Dev(),g.Dev(),_dmean.Dev(),_drstd.Dev(),dx.DevWrite(),dg.DevWrite(),db.DevWrite(),M,C);
+		return {dx,dg,db};
+	}
+#endif
 };
 
 
@@ -252,6 +340,7 @@ public:
 
 	NDArray Forward(const NDArrays& in) override
 	{
+		DISPATCH_FORWARD
 		const NDArray x = in[0].Contiguous();
 		NDArray y = NDData::New(x.Shape());
 		const FP* xr = x.Raw();
@@ -271,6 +360,7 @@ public:
 
 	NDArrays Backward(const NDArray& gradient,const NDArrays& in) override
 	{
+		DISPATCH_BACKWARD
 		const NDArray x = in[0].Contiguous();
 		const NDArray g = gradient.Contiguous();
 		NDArray dx = NDData::New(x.Shape());
@@ -289,6 +379,27 @@ public:
 		});
 		return {dx};
 	}
+
+#ifdef AUTOGRAD_CUDA
+	GPU_FORWARD
+
+	NDArray ForwardGpu(const NDArrays& in)
+	{
+		const NDArray x = in[0].Contiguous();
+		NDArray y = NDData::New(x.Shape());
+		dev::ActivationForward((int)_type,x.Dev(),y.DevWrite(),x.Size());
+		return y;
+	}
+
+	NDArrays BackwardGpu(const NDArray& gradient,const NDArrays& in)
+	{
+		const NDArray x = in[0].Contiguous();
+		const NDArray g = gradient.Contiguous();
+		NDArray dx = NDData::New(x.Shape());
+		dev::ActivationBackward((int)_type,x.Dev(),g.Dev(),dx.DevWrite(),x.Size());
+		return {dx};
+	}
+#endif
 };
 
 
@@ -298,6 +409,7 @@ class KoAddSame : public Kernel
 public:
 	NDArray Forward(const NDArrays& in) override
 	{
+		DISPATCH_FORWARD
 		const NDArray a = in[0].Contiguous();
 		const NDArray b = in[1].Contiguous();
 		if(a.Shape()!=b.Shape())
@@ -319,6 +431,21 @@ public:
 		// The same buffer goes to both creators; Tensor::Backward never modifies a shared gradient in place.
 		return {gradient,gradient};
 	}
+
+#ifdef AUTOGRAD_CUDA
+	GPU_FORWARD
+
+	NDArray ForwardGpu(const NDArrays& in)
+	{
+		const NDArray a = in[0].Contiguous();
+		const NDArray b = in[1].Contiguous();
+		if(a.Shape()!=b.Shape())
+			throw IncompatibleShape();
+		NDArray y = NDData::New(a.Shape());
+		dev::Add(a.Dev(),b.Dev(),y.DevWrite(),a.Size());
+		return y;
+	}
+#endif
 };
 
 
@@ -386,6 +513,7 @@ public:
 
 	NDArray Forward(const NDArrays& in) override
 	{
+		DISPATCH_FORWARD
 		const NDArray qkv = in[0].Contiguous();
 		const int B = qkv.Shape()[0];
 		const int T = qkv.Shape()[1];
@@ -438,6 +566,7 @@ public:
 
 	NDArrays Backward(const NDArray& gradient,const NDArrays& in) override
 	{
+		DISPATCH_BACKWARD
 		const NDArray qkv = in[0].Contiguous();
 		const NDArray g = gradient.Contiguous();
 		const int B = qkv.Shape()[0];
@@ -493,6 +622,92 @@ public:
 		});
 		return {dqkv};
 	}
+
+#ifdef AUTOGRAD_CUDA
+	GPU_FORWARD
+
+	NDArray _dP,_dQr,_dKr;	// Device: attention probabilities (B*H,T,T) and rotated Q/K (B*H,T,hs).
+
+	NDArray ForwardGpu(const NDArrays& in)
+	{
+		const NDArray qkv = in[0].Contiguous();
+		const int B = qkv.Shape()[0];
+		const int T = qkv.Shape()[1];
+		const int C = qkv.Shape()[2]/3;
+		const int H = _heads;
+		const int hs = C/H;
+		const float scale = float(1.0/std::sqrt((double)hs));
+		const float* src = qkv.Dev();
+		_dQr._Attach(NDData::New({B*H,T,hs}));
+		_dKr._Attach(NDData::New({B*H,T,hs}));
+		_dP._Attach(NDData::New({B*H,T,T}));
+		float* Q = _dQr.DevWrite();
+		float* K = _dKr.DevWrite();
+		float* P = _dP.DevWrite();
+		dev::GatherHeads(src,Q,B,T,C,H,0,_rope);
+		dev::GatherHeads(src,K,B,T,C,H,1,_rope);
+
+		dev::Batch flat;
+		flat.count = B*H;
+		flat.aOuter = (long long)T*hs; flat.bOuter = (long long)T*hs; flat.cOuter = (long long)T*T;
+		dev::Gemm(false,true,T,T,hs,scale,Q,hs,K,hs,0.0f,P,T,flat);			// S = scale Q K^T
+		dev::CausalSoftmax(P,B*H*T,T);
+
+		NDArray out = NDData::New({B,T,C});
+		dev::Batch heads;
+		heads.count = B*H; heads.inner = H;
+		heads.aOuter = (long long)H*T*T; heads.aInner = (long long)T*T;		// P
+		heads.bOuter = (long long)T*3*C; heads.bInner = hs;					// V inside qkv
+		heads.cOuter = (long long)T*C; heads.cInner = hs;					// out
+		dev::Gemm(false,false,T,hs,T,1.0f,P,T,src+2*C,3*C,0.0f,out.DevWrite(),C,heads);	// O = P V
+		return out;
+	}
+
+	NDArrays BackwardGpu(const NDArray& gradient,const NDArrays& in)
+	{
+		const NDArray qkv = in[0].Contiguous();
+		const NDArray g = gradient.Contiguous();
+		const int B = qkv.Shape()[0];
+		const int T = qkv.Shape()[1];
+		const int C = qkv.Shape()[2]/3;
+		const int H = _heads;
+		const int hs = C/H;
+		const float scale = float(1.0/std::sqrt((double)hs));
+		const float* src = qkv.Dev();
+		const float* dO = g.Dev();
+		const float* P = _dP.Dev();
+		NDArray dqkv = NDData::New(qkv.Shape());
+		float* dst = dqkv.DevWrite();
+
+		dev::Batch heads;
+		heads.count = B*H; heads.inner = H;
+		heads.aOuter = (long long)H*T*T; heads.aInner = (long long)T*T;		// P
+		heads.bOuter = (long long)T*C; heads.bInner = hs;					// dO
+		heads.cOuter = (long long)T*3*C; heads.cInner = hs;					// dV inside dqkv
+		dev::Gemm(true,false,T,hs,T,1.0f,P,T,dO,C,0.0f,dst+2*C,3*C,heads);	// dV = P^T dO
+
+		NDArray dS = NDData::New({B*H,T,T});
+		float* dSp = dS.DevWrite();
+		dev::Batch h2;
+		h2.count = B*H; h2.inner = H;
+		h2.aOuter = (long long)T*C; h2.aInner = hs;							// dO
+		h2.bOuter = (long long)T*3*C; h2.bInner = hs;						// V
+		h2.cOuter = (long long)H*T*T; h2.cInner = (long long)T*T;			// dP
+		dev::Gemm(false,true,T,T,hs,1.0f,dO,C,src+2*C,3*C,0.0f,dSp,T,h2);	// dP = dO V^T
+		dev::CausalSoftmaxBackward(P,dSp,B*H*T,T,scale);					// dS
+
+		NDArray dQ = NDData::New({B*H,T,hs});
+		NDArray dK = NDData::New({B*H,T,hs});
+		dev::Batch flat;
+		flat.count = B*H;
+		flat.aOuter = (long long)T*T; flat.bOuter = (long long)T*hs; flat.cOuter = (long long)T*hs;
+		dev::Gemm(false,false,T,hs,T,1.0f,dSp,T,_dKr.Dev(),hs,0.0f,dQ.DevWrite(),hs,flat);	// dQr = dS Kr
+		dev::Gemm(true,false,T,hs,T,1.0f,dSp,T,_dQr.Dev(),hs,0.0f,dK.DevWrite(),hs,flat);	// dKr = dS^T Qr
+		dev::ScatterHeads(dQ.Dev(),dst,B,T,C,H,0,_rope);
+		dev::ScatterHeads(dK.Dev(),dst,B,T,C,H,1,_rope);
+		return {dqkv};
+	}
+#endif
 };
 
 
@@ -510,6 +725,7 @@ public:
 
 	NDArray Forward(const NDArrays& in) override
 	{
+		DISPATCH_FORWARD
 		const NDArray logits = in[0].Contiguous();
 		const int N = fused::Rows(logits);
 		const int V = fused::Cols(logits);
@@ -547,6 +763,7 @@ public:
 
 	NDArrays Backward(const NDArray& gradient,const NDArrays& in) override
 	{
+		DISPATCH_BACKWARD
 		const int N = fused::Rows(in[0]);
 		const int V = fused::Cols(in[0]);
 		const FP scale = gradient[{}]/FP(N);
@@ -566,6 +783,32 @@ public:
 		});
 		return {d};
 	}
+
+#ifdef AUTOGRAD_CUDA
+	GPU_FORWARD
+
+	NDArray _dprobs;
+
+	NDArray ForwardGpu(const NDArrays& in)
+	{
+		const NDArray logits = in[0].Contiguous();
+		const int N = fused::Rows(logits);
+		const int V = fused::Cols(logits);
+		_dprobs._Attach(NDData::New({N,V}));
+		NDArray loss = NDData::New({},FP(0));
+		dev::SoftmaxCrossEntropyForward(logits.Dev(),_targets.Dev(),_dprobs.DevWrite(),loss.DevWrite(),N,V);
+		return loss;
+	}
+
+	NDArrays BackwardGpu(const NDArray& gradient,const NDArrays& in)
+	{
+		const int N = fused::Rows(in[0]);
+		const int V = fused::Cols(in[0]);
+		NDArray d = NDData::New(in[0].Shape());
+		dev::SoftmaxCrossEntropyBackward(_dprobs.Dev(),_targets.Dev(),gradient.Contiguous().Dev(),d.DevWrite(),N,V);
+		return {d};
+	}
+#endif
 };
 
 
@@ -636,6 +879,7 @@ class KoLSTM : public Kernel
 public:
 	NDArray Forward(const NDArrays& in) override
 	{
+		DISPATCH_FORWARD
 		const NDArray x = in[0].Contiguous();
 		const NDArray Wx = in[1].Contiguous();
 		const NDArray Wh = in[2].Contiguous();
@@ -693,6 +937,7 @@ public:
 
 	NDArrays Backward(const NDArray& gradient,const NDArrays& in) override
 	{
+		DISPATCH_BACKWARD
 		const NDArray x = in[0].Contiguous();
 		const NDArray Wx = in[1].Contiguous();
 		const NDArray Wh = in[2].Contiguous();
@@ -777,4 +1022,192 @@ public:
 		fused::ColumnSum(dz.data(),B*T,G,db.Raw());
 		return {dx,dWx,dWh,db};
 	}
+
+#ifdef AUTOGRAD_CUDA
+	GPU_FORWARD
+
+	NDArray _dz,_dc;	// Device: activated gates (B,T,4H) and cells (B,T,H).
+
+	NDArray ForwardGpu(const NDArrays& in)
+	{
+		const NDArray x = in[0].Contiguous();
+		const NDArray Wx = in[1].Contiguous();
+		const NDArray Wh = in[2].Contiguous();
+		const int B = x.Shape()[0];
+		const int T = x.Shape()[1];
+		const int I = x.Shape()[2];
+		const int H = Wh.Shape()[0];
+		const int G = 4*H;
+		_dz._Attach(NDData::New({B,T,G}));
+		_dc._Attach(NDData::New({B,T,H}));
+		NDArray out = NDData::New({B,T,H});
+		float* z = _dz.DevWrite();
+		float* c = _dc.DevWrite();
+		float* h = out.DevWrite();
+		const float* wh = Wh.Dev();
+		dev::FillRows(z,in[3].Contiguous().Dev(),B*T,G);
+		dev::Gemm(false,false,B*T,G,I,1.0f,x.Dev(),I,Wx.Dev(),G,1.0f,z,G);
+		for(int t=0;t<T;++t)
+		{
+			if(t>0)
+				dev::Gemm(false,false,B,G,H,1.0f,h+(size_t)(t-1)*H,T*H,wh,G,1.0f,z+(size_t)t*G,T*G);
+			dev::LstmStepForward(z+(size_t)t*G,T*G,t>0?c+(size_t)(t-1)*H:nullptr,T*H,c+(size_t)t*H,h+(size_t)t*H,T*H,B,H);
+		}
+		return out;
+	}
+
+	NDArrays BackwardGpu(const NDArray& gradient,const NDArrays& in)
+	{
+		const NDArray x = in[0].Contiguous();
+		const NDArray Wx = in[1].Contiguous();
+		const NDArray Wh = in[2].Contiguous();
+		const NDArray g = gradient.Contiguous();
+		const int B = x.Shape()[0];
+		const int T = x.Shape()[1];
+		const int I = x.Shape()[2];
+		const int H = Wh.Shape()[0];
+		const int G = 4*H;
+		const float* a = _dz.Dev();
+		const float* c = _dc.Dev();
+		const float* gr = g.Dev();
+		const float* wh = Wh.Dev();
+		NDArray dzA = NDData::New({B,T,G});
+		NDArray dhA = NDData::New({B,H});
+		NDArray dcA = NDData::New({B,H});
+		float* dz = dzA.DevWrite();
+		float* dh = dhA.DevWrite();
+		float* dc = dcA.DevWrite();
+		dev::Zero(dh,(size_t)B*H);
+		dev::Zero(dc,(size_t)B*H);
+		for(int t=T-1;t>=0;--t)
+		{
+			dev::LstmStepBackward(a+(size_t)t*G,T*G,c+(size_t)t*H,t>0?c+(size_t)(t-1)*H:nullptr,T*H,gr+(size_t)t*H,T*H,dh,dc,dz+(size_t)t*G,T*G,B,H);
+			if(t>0)
+				dev::Gemm(false,true,B,H,G,1.0f,dz+(size_t)t*G,T*G,wh,G,0.0f,dh,H);
+		}
+		NDArray hprev = NDData::New({B,T,H});
+		dev::LstmPreviousH(a,c,hprev.DevWrite(),B,T,H);
+		NDArray dx = NDData::New(x.Shape());
+		NDArray dWx = NDData::New(Wx.Shape());
+		NDArray dWh = NDData::New(Wh.Shape());
+		NDArray db = NDData::New(in[3].Shape());
+		dev::Gemm(false,true,B*T,I,G,1.0f,dz,G,Wx.Dev(),G,0.0f,dx.DevWrite(),I);
+		dev::Gemm(true,false,I,G,B*T,1.0f,x.Dev(),I,dz,G,0.0f,dWx.DevWrite(),G);
+		dev::Gemm(true,false,H,G,B*T,1.0f,hprev.Dev(),H,dz,G,0.0f,dWh.DevWrite(),G);
+		dev::ColumnSum(dz,B*T,G,db.DevWrite());
+		return {dx,dWx,dWh,db};
+	}
+#endif
+};
+
+
+
+// Token embedding lookup, optionally plus a learned position embedding: y[b,t] = tok[idx[b,t]] (+ pos[t]).
+// Inputs: tok (V,C) [, pos (block,C)]; the indices (B,T) are a constant.
+class KoEmbedding : public Kernel
+{
+	NDArray _idx;
+
+public:
+	KoEmbedding(const NDArray& idx) :
+		_idx(idx.Contiguous())
+	{
+	}
+
+	NDArray Forward(const NDArrays& in) override
+	{
+		DISPATCH_FORWARD
+		const int B = _idx.Shape()[0];
+		const int T = _idx.Shape()[1];
+		const NDArray tok = in[0].Contiguous();
+		const int C = tok.Shape()[1];
+		const FP* tr = tok.Raw();
+		const FP* pr = in.size()>1?in[1].Contiguous().Raw():nullptr;
+		const FP* ir = _idx.Raw();
+		NDArray y = NDData::New({B,T,C});
+		FP* yr = y.Raw();
+		ParallelForRange(0,B*T,64,[&](int r0,int r1)
+		{
+			for(int r=r0;r<r1;++r)
+			{
+				const FP* src = tr+(size_t)((int)ir[r])*C;
+				const FP* p = pr?pr+(size_t)(r%T)*C:nullptr;
+				FP* dst = yr+(size_t)r*C;
+				for(int c=0;c<C;++c)
+					dst[c] = src[c]+(p?p[c]:FP(0));
+			}
+		});
+		return y;
+	}
+
+	NDArrays Backward(const NDArray& gradient,const NDArrays& in) override
+	{
+		DISPATCH_BACKWARD
+		const int B = _idx.Shape()[0];
+		const int T = _idx.Shape()[1];
+		const int C = in[0].Shape()[1];
+		const NDArray g = gradient.Contiguous();
+		const FP* gr = g.Raw();
+		const FP* ir = _idx.Raw();
+		NDArray dtok = NDData::New(in[0].Shape(),0.0);
+		FP* dt = dtok.Raw();
+		// Parallel over feature columns so no two threads write the same element.
+		ParallelForRange(0,C,8,[&](int c0,int c1)
+		{
+			for(int r=0;r<B*T;++r)
+			{
+				FP* dst = dt+(size_t)((int)ir[r])*C;
+				const FP* src = gr+(size_t)r*C;
+				for(int c=c0;c<c1;++c)
+					dst[c] += src[c];
+			}
+		});
+		if(in.size()==1)
+			return {dtok};
+		NDArray dpos = NDData::New(in[1].Shape(),0.0);
+		FP* dp = dpos.Raw();
+		for(int b=0;b<B;++b)
+			for(int t=0;t<T;++t)
+			{
+				const FP* src = gr+((size_t)b*T+t)*C;
+				FP* dst = dp+(size_t)t*C;
+				for(int c=0;c<C;++c)
+					dst[c] += src[c];
+			}
+		return {dtok,dpos};
+	}
+
+#ifdef AUTOGRAD_CUDA
+	GPU_FORWARD
+
+	NDArray ForwardGpu(const NDArrays& in)
+	{
+		const int B = _idx.Shape()[0];
+		const int T = _idx.Shape()[1];
+		const NDArray tok = in[0].Contiguous();
+		const int C = tok.Shape()[1];
+		NDArray y = NDData::New({B,T,C});
+		dev::EmbeddingForward(tok.Dev(),in.size()>1?in[1].Contiguous().Dev():nullptr,_idx.Dev(),y.DevWrite(),B,T,C);
+		return y;
+	}
+
+	NDArrays BackwardGpu(const NDArray& gradient,const NDArrays& in)
+	{
+		const int B = _idx.Shape()[0];
+		const int T = _idx.Shape()[1];
+		const int V = in[0].Shape()[0];
+		const int C = in[0].Shape()[1];
+		NDArray dtok = NDData::New(in[0].Shape());
+		if(in.size()==1)
+		{
+			dev::EmbeddingBackward(gradient.Contiguous().Dev(),_idx.Dev(),dtok.DevWrite(),nullptr,B,T,C,V);
+			return {dtok};
+		}
+		NDArray dpos = NDData::New(in[1].Shape());
+		float* dp = dpos.DevWrite();
+		dev::Zero(dp,dpos.Size());
+		dev::EmbeddingBackward(gradient.Contiguous().Dev(),_idx.Dev(),dtok.DevWrite(),dp,B,T,C,V);
+		return {dtok,dpos};
+	}
+#endif
 };

@@ -6,6 +6,9 @@
 #include "NDThreadPool.h"
 #include "TiledMatMul.h"
 #include "Gemm.h"
+#ifdef AUTOGRAD_CUDA
+#include "CUDA\DeviceKernels.h"
+#endif
 #include <ppl.h>
 #include <sstream>
 #include <fstream>
@@ -68,7 +71,7 @@ void CudaMatMul(const float* const h_A,const float* const h_B,float* const h_C,c
 // Global compute configuration.
 struct NDConfig
 {
-	static inline bool useGpu = false;	// Route large matrix multiplies to CUDA (float builds only).
+	static inline bool useGpu = false;	// Float builds: fused kernels run on the GPU (needs AUTOGRAD_CUDA), else MatMul uses CUDA.
 };
 
 
@@ -131,6 +134,13 @@ public:
 	inline bool				IsContiguous() const;
 	inline NDArray			Contiguous() const;		// Returns this if contiguous, else a contiguous copy.
 
+	// Device (GPU) copies. An array can be valid on the host, the device, or both; these sync lazily.
+	inline FP*				Dev() const;			// Device pointer for reading (uploads if needed).
+	inline FP*				DevModify() const;		// Device pointer for read-modify-write (host copy becomes stale).
+	inline FP*				DevWrite() const;		// Device pointer for overwriting (no upload, host copy becomes stale).
+	inline void				EnsureHost() const;		// Download if only the device copy is current.
+	inline bool				OnDevice() const;		// True if the device copy is current.
+
 	inline int				ArgMax() const;
 	inline NDArray			ArgMax(const int dim) const;
 	inline void				_ClipNorm(const FP clipNorm) const;
@@ -187,6 +197,9 @@ class NDData : public std::enable_shared_from_this<NDData>
 	FP*					_data;		// Pointer to memory containing array elements - see InitialiseSizeAndStride for formatting.
 	
 	const NDDataPtrC	_parent;	// Ponter to parent if data is not owned (i.e. this is a view).
+
+	mutable FP*			_dev = nullptr;	// Device copy (owned arrays only).
+	mutable int			_loc = 0;		// 0: host current. 1: device current. 2: both current.
 
 	// Shape iterator - iterates every dimension value combination.
 	//
@@ -681,7 +694,70 @@ public:	// Constructors must be public to use make_shared.
 
 	FP* Raw() const
 	{
+		EnsureHost();
+		if(_dev)
+			_loc = 0;		// Caller may write through the pointer, so the device copy can no longer be trusted.
 		return _data;
+	}
+
+	void EnsureHost() const
+	{
+		if(_parent)
+		{
+			_parent->EnsureHost();
+			return;
+		}
+#ifdef AUTOGRAD_CUDA
+		if(_loc==1)
+		{
+			dev::Download(_data,_dev,_size);
+			_loc = 2;
+		}
+#endif
+	}
+
+	bool OnDevice() const
+	{
+		return !_parent&&_dev&&_loc!=0;
+	}
+
+	FP* Dev() const
+	{
+#ifdef AUTOGRAD_CUDA
+		if(_parent)
+			throw NotImplemented();	// Device views are not supported; use Contiguous().
+		if(!_dev)
+			_dev = (FP*)dev::Alloc(_size*sizeof(FP));
+		if(_loc==0)
+		{
+			dev::Upload(_dev,_data,_size);
+			_loc = 2;
+		}
+		return _dev;
+#else
+		throw NotImplemented();
+#endif
+	}
+
+	FP* DevModify() const
+	{
+		FP* p = Dev();
+		_loc = 1;
+		return p;
+	}
+
+	FP* DevWrite() const
+	{
+#ifdef AUTOGRAD_CUDA
+		if(_parent)
+			throw NotImplemented();
+		if(!_dev)
+			_dev = (FP*)dev::Alloc(_size*sizeof(FP));
+		_loc = 1;
+		return _dev;
+#else
+		throw NotImplemented();
+#endif
 	}
 
 	bool IsContiguous() const
@@ -695,6 +771,7 @@ public:	// Constructors must be public to use make_shared.
 		_shape(data._shape),
 		_data(mem.Alloc<FP>(InitialiseSizeAndStride()))
 	{
+		data.EnsureHost();
 		if(data.HasNaturalStride())
 		{
 			// Use fast memory copy.
@@ -895,6 +972,10 @@ public:	// Constructors must be public to use make_shared.
 		{
 			mem.Free(_data);
 			_data = nullptr;
+#ifdef AUTOGRAD_CUDA
+			if(_dev)
+				dev::Free(_dev);
+#endif
 		}
 	}
 
@@ -3401,4 +3482,29 @@ inline NDArray NDArray::Contiguous() const
 	if(_data->IsContiguous())
 		return *this;
 	return NDData::New(*_data);
+}
+
+inline FP* NDArray::Dev() const
+{
+	return _data->Dev();
+}
+
+inline FP* NDArray::DevModify() const
+{
+	return _data->DevModify();
+}
+
+inline FP* NDArray::DevWrite() const
+{
+	return _data->DevWrite();
+}
+
+inline void NDArray::EnsureHost() const
+{
+	_data->EnsureHost();
+}
+
+inline bool NDArray::OnDevice() const
+{
+	return _data->OnDevice();
 }

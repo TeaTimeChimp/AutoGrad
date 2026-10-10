@@ -56,6 +56,60 @@ class Muon : public Optimiser
 				dst[(size_t)j*r+i] = src[(size_t)i*c+j];
 	}
 
+#ifdef AUTOGRAD_CUDA
+	std::vector<NDArray>	_dbuf;	// Device momentum buffers.
+
+	// Newton-Schulz on the device for an r x c (r<=c) matrix X (in place).
+	static void NewtonSchulzGpu(float* X,const int r,const int c,float* A,float* B,float* T)
+	{
+		const float a = 3.4445f,b = -4.7750f,cc = 2.0315f;
+		const double norm = std::sqrt(dev::SumSquares(X,(size_t)r*c));
+		dev::Scale(X,float(1.0/(norm+1e-7)),(size_t)r*c);
+		for(int s=0;s<5;++s)
+		{
+			dev::Gemm(false,true,r,r,c,1.0f,X,c,X,c,0.0f,A,r);			// A = X X^T
+			dev::Gemm(false,false,r,r,r,cc,A,r,A,r,0.0f,B,r);			// B = c A A
+			dev::Axpy(B,A,b,(size_t)r*r);								// B += b A
+			dev::Copy(T,X,(size_t)r*c);
+			dev::Gemm(false,false,r,c,r,1.0f,B,r,T,c,a,X,c);			// X = a X + B X
+		}
+	}
+
+	void StepGpu(const size_t k,const int rows,const int cols)
+	{
+		auto& p = _parameters[k];
+		const size_t n = (size_t)rows*cols;
+		if(_dbuf.size()<_parameters.size())
+			_dbuf.resize(_parameters.size());
+		if(_dbuf[k].Size()==0)
+		{
+			_dbuf[k]._Attach(NDData::New({rows,cols},0.0));
+		}
+		const int r = (std::min)(rows,cols);
+		const int c = (std::max)(rows,cols);
+		NDArray u = NDData::New({rows,cols});
+		NDArray t = NDData::New({rows,cols});
+		NDArray A = NDData::New({r,r});
+		NDArray B = NDData::New({r,r});
+		float* ud = u.DevWrite();
+		float* td = t.DevWrite();
+		float* g = p->Gradient()->Data().DevModify();
+		dev::NesterovMomentum(g,_dbuf[k].DevModify(),ud,n,_momentum);
+		if(rows<=cols)
+			NewtonSchulzGpu(ud,rows,cols,A.DevWrite(),B.DevWrite(),td);
+		else
+		{
+			dev::Transpose(ud,td,rows,cols);							// td = u^T (cols x rows)
+			NewtonSchulzGpu(td,cols,rows,A.DevWrite(),B.DevWrite(),ud);
+			dev::Transpose(td,ud,cols,rows);
+		}
+		const float scale = _lr*float(std::sqrt((std::max)(1.0,double(cols)/double(rows))));
+		dev::Axpy(p->Data().DevModify(),ud,-scale,n);
+		dev::Zero(g,n);
+		p->ClearChildren();
+	}
+#endif
+
 public:
 	Muon(const std::vector<TensorPtr>& parameters,const FP lr=FP(0.02),const FP momentum=FP(0.95)) :
 		Optimiser(parameters),
@@ -85,6 +139,13 @@ public:
 			const int rows = p->Data().Shape()[0];
 			const int cols = p->Data().Shape()[1];
 			const int n = rows*cols;
+#ifdef AUTOGRAD_CUDA
+			if(NDConfig::useGpu)
+			{
+				StepGpu(k,rows,cols);
+				continue;
+			}
+#endif
 			FP* w = p->Data().Raw();
 			FP* g = p->Gradient()->Data().Raw();
 			FP* m = _buffers[k].data();
