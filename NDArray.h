@@ -5,6 +5,7 @@
 #include "NDAllocator.h"
 #include "NDThreadPool.h"
 #include "TiledMatMul.h"
+#include "Gemm.h"
 #include <ppl.h>
 #include <sstream>
 #include <fstream>
@@ -64,6 +65,13 @@ void CudaMatMul(const float* const h_A,const float* const h_B,float* const h_C,c
 //
 
 
+// Global compute configuration.
+struct NDConfig
+{
+	static inline bool useGpu = false;	// Route large matrix multiplies to CUDA (float builds only).
+};
+
+
 class NDData;
 typedef std::shared_ptr<NDData>			NDDataPtr;
 typedef std::shared_ptr<const NDData>	NDDataPtrC;
@@ -117,6 +125,11 @@ public:
 
 	inline void				_Attach(const NDArray& v);
 	inline void				_Reset();
+
+	// Raw access for hand-written kernels. Only valid when IsContiguous() is true.
+	inline FP*				Raw() const;
+	inline bool				IsContiguous() const;
+	inline NDArray			Contiguous() const;		// Returns this if contiguous, else a contiguous copy.
 
 	inline int				ArgMax() const;
 	inline NDArray			ArgMax(const int dim) const;
@@ -665,6 +678,16 @@ class NDData : public std::enable_shared_from_this<NDData>
 	};
 
 public:	// Constructors must be public to use make_shared.
+
+	FP* Raw() const
+	{
+		return _data;
+	}
+
+	bool IsContiguous() const
+	{
+		return HasNaturalStride();
+	}
 
 	// Deep-copy-constructor.
 	//
@@ -1461,6 +1484,9 @@ public:
 
 	NDArray GpuMatMul(const NDArray& v) const
 	{
+#ifdef AUTOGRAD_DOUBLE
+		return GemmMatMul(v);
+#else
 		// Both arrays must be 2D.
 		if(_shape.size()!=2||v->_shape.size()!=2)
 			throw IncompatibleShape();
@@ -1498,6 +1524,7 @@ public:
 		CudaMatMul(a->_data,b->_data,c->_data,aRows,aCols,bCols);
 
 		return c;
+#endif
 	}
 
 	// Matrix multiplication.
@@ -1509,6 +1536,9 @@ public:
 	//
 	NDArray CpuMatMul(const NDArray& v) const
 	{
+#ifdef AUTOGRAD_DOUBLE
+		return GemmMatMul(v);
+#else
 		// Both arrays must be 2D.
 		if(_shape.size()!=2||v->_shape.size()!=2)
 			throw IncompatibleShape();
@@ -1608,13 +1638,60 @@ public:
 
 		c->DebugRangeCheck();
 		return c;
+#endif
+	}
+
+
+	// 2D matrix multiply using the packed CPU GEMM. Transposed views are handled without copying.
+	//
+	NDArray GemmMatMul(const NDArray& v,const bool parallel=true) const
+	{
+		if(_shape.size()!=2||v->_shape.size()!=2)
+			throw IncompatibleShape();
+		const int M = _shape[0];
+		const int K = _shape[1];
+		const int N = v->_shape[1];
+		if(v->_shape[0]!=K)
+			throw IncompatibleShape();
+
+		// Describe each operand as (pointer,leading dimension,transposed); copy only if neither stride is 1.
+		auto describe = [](const NDData& x,NDArray& keep,const FP*& ptr,int& ld,bool& trans)
+		{
+			const int rows = x._shape[0];
+			const int cols = x._shape[1];
+			if(x._stride[1]==1&&(x._stride[0]>=cols||rows==1))
+			{
+				ptr = x._data; ld = rows==1?cols:x._stride[0]; trans = false;
+			}
+			else if(x._stride[0]==1&&(x._stride[1]>=rows||cols==1))
+			{
+				ptr = x._data; ld = cols==1?rows:x._stride[1]; trans = true;
+			}
+			else
+			{
+				keep = NDData::New(x);
+				ptr = keep->_data; ld = cols; trans = false;
+			}
+		};
+		NDArray ka,kb;
+		const FP* a; int lda; bool ta;
+		const FP* b; int ldb; bool tb;
+		describe(*this,ka,a,lda,ta);
+		describe(*v,kb,b,ldb,tb);
+
+		NDArray c = NDData::New({M,N});
+		gemm::Gemm<FP>(ta,tb,M,N,K,FP(1),a,lda,b,ldb,FP(0),c->_data,N,parallel);
+		return c;
 	}
 
 
 	NDArray MatMul(const NDArray& v) const
 	{
-		return GpuMatMul(v);
-		//return CpuMatMul(v);
+#ifndef AUTOGRAD_DOUBLE
+		if(NDConfig::useGpu)
+			return GpuMatMul(v);
+#endif
+		return GemmMatMul(v);
 	}
 
 
@@ -3306,4 +3383,22 @@ NDArray NDArray::Zeros() const
 void NDArray::Print(std::ostream& out) const
 {
 	_data->Print(out);
+}
+
+
+inline FP* NDArray::Raw() const
+{
+	return _data->Raw();
+}
+
+inline bool NDArray::IsContiguous() const
+{
+	return _data->IsContiguous();
+}
+
+inline NDArray NDArray::Contiguous() const
+{
+	if(_data->IsContiguous())
+		return *this;
+	return NDData::New(*_data);
 }

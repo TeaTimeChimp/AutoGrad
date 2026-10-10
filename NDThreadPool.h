@@ -242,7 +242,7 @@ private:
     std::condition_variable             _workersCondition;
     std::vector<std::thread>            _workerThreads;
     std::vector<WorkerThreadContext*>   _workerContexts;
-    bool                                _stop;
+    std::atomic<bool>                   _stop;
 
 	// Task to run a lambda function for each value in a range.
 	template<typename T>
@@ -331,6 +331,9 @@ public:
 
     ~NDThreadPool()
     {
+        // Signal workers to stop, otherwise their wait predicate never becomes true and join() blocks forever.
+        _stop = true;
+
         // Wake all worker threads.
         for(auto& worker:_workerContexts)
             worker->Wake();

@@ -2,6 +2,7 @@
 
 #include "NDArray.h"
 #include "String.h"
+#include "Profiler.h"
 #include <map>
 #include "KoAdd.h"
 #include "KoArgMax.h"
@@ -69,6 +70,28 @@ class Tensor : public std::enable_shared_from_this<class Tensor>
 	Tensor(const Tensor&) = delete;
 	void operator = (const Tensor&) = delete;
 
+	static NDArray ProfiledForward(const KernelPtr& kernel,const NDArrays& inputs)
+	{
+		if(!Profiler::Enabled())
+			return kernel->Forward(inputs);
+		const std::string name = std::string(typeid(*kernel).name()+6)+".Forward";	// Skip "class ".
+		const auto start = std::chrono::steady_clock::now();
+		NDArray r = kernel->Forward(inputs);
+		Profiler::Record(name,std::chrono::duration<double>(std::chrono::steady_clock::now()-start).count());
+		return r;
+	}
+
+	static NDArrays ProfiledBackward(const KernelPtr& kernel,const NDArray& gradient,const NDArrays& inputs)
+	{
+		if(!Profiler::Enabled())
+			return kernel->Backward(gradient,inputs);
+		const std::string name = std::string(typeid(*kernel).name()+6)+".Backward";
+		const auto start = std::chrono::steady_clock::now();
+		NDArrays r = kernel->Backward(gradient,inputs);
+		Profiler::Record(name,std::chrono::duration<double>(std::chrono::steady_clock::now()-start).count());
+		return r;
+	}
+
 	static NDArrays Arrays(const std::vector<TensorPtr>& tensors)
 	{
 		NDArrays arrays;
@@ -115,7 +138,7 @@ public:
 		_creators(begin,end),
 		_kernel(kernel),
 		_autograd(autograd),
-		_data(kernel->Forward(Arrays(_creators)))
+		_data(ProfiledForward(kernel,Arrays(_creators)))
 	{
 		// Add this as a child of it's creators.
 		for(auto& c:_creators)
@@ -232,6 +255,9 @@ public:
 				// Only need momentum for learnable model parameters - without any other identifier these don't have creators.
 				if(_creators.size()==0)
 				{
+					// Parameters keep their gradient across the whole backward pass and the optimiser works on it in place,
+					// so take a private contiguous copy rather than sharing a buffer another tensor may also hold.
+					_gradient = Tensor::New(NDData::New(*gradient->_data));
 					_momentum = Tensor::New(_gradient->_data.Zeros());
 					_momentum2 = Tensor::New(_gradient->_data.Zeros());
 				}
@@ -239,8 +265,13 @@ public:
 			else
 			{
 				// Subsequent gradient passed back, add to existing gradient.
-				// Inplace addition is more efficient and also creating a new Tenosr can create a circular reference.
-				_gradient->_data += gradient->_data;
+				// Kernels may hand the same buffer to several creators (e.g. KoAdd passes its incoming gradient to both
+				// inputs), so an in-place += here could silently change another tensor's gradient. Only add in place
+				// into buffers this tensor owns (parameters, see above); otherwise allocate the sum.
+				if(_creators.size()==0)
+					_gradient->_data += gradient->_data;
+				else
+					_gradient = Tensor::New(_gradient->_data+gradient->_data);
 			}
 
 			// Shape of gradient should be the same as (this) the Tensor it relates to - there should be a gradient for each value.
@@ -254,7 +285,7 @@ public:
 				const NDArrays inputs = Arrays(_creators);
 
 				// Compute gradients for each creator.
-				const NDArrays gradients = _kernel->Backward(_gradient->_data,inputs);
+				const NDArrays gradients = ProfiledBackward(_kernel,_gradient->_data,inputs);
 
 				// Release the gradient for this tensor, it has been passed back to the creators.
 				_gradient.reset();
