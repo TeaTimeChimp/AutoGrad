@@ -76,3 +76,9 @@ namespace dev
 	// y = x * keep(i)/(1-p) where keep(i) = hash(seed,i) >= p (same hash as the CPU path).
 	void Dropout(const float* x,float* y,size_t n,float p,unsigned seed);
 }
+
+namespace dev
+{
+	// For each of 'count' contiguous matrices of n elements: x /= (||x|| + eps). One block per matrix, no host sync.
+	void NormalizeBatched(float* x,int count,size_t n,float eps);
+}

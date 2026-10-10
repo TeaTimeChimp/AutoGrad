@@ -1067,3 +1067,32 @@ namespace dev
 		DropoutKernel<<<Blocks(n,256),256>>>(x,y,n,p,seed);
 	}
 }
+
+
+__global__ void NormalizeBatchedKernel(float* x,const size_t n,const float eps)
+{
+	float* m = x+(size_t)blockIdx.x*n;
+	__shared__ float s[256];
+	float v = 0.0f;
+	for(size_t i=threadIdx.x;i<n;i+=blockDim.x)
+		v += m[i]*m[i];
+	s[threadIdx.x] = v;
+	__syncthreads();
+	for(int w=128;w>0;w>>=1)
+	{
+		if(threadIdx.x<w)
+			s[threadIdx.x] += s[threadIdx.x+w];
+		__syncthreads();
+	}
+	const float inv = 1.0f/(sqrtf(s[0])+eps);
+	for(size_t i=threadIdx.x;i<n;i+=blockDim.x)
+		m[i] *= inv;
+}
+
+namespace dev
+{
+	void NormalizeBatched(float* x,int count,size_t n,float eps)
+	{
+		NormalizeBatchedKernel<<<count,256>>>(x,n,eps);
+	}
+}
