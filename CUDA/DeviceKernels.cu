@@ -202,6 +202,188 @@ __global__ void GemmKernel(const bool transA,const bool transB,const int M,const
 }
 
 
+
+// Faster 128x128x8 SGEMM: float4 global loads, double-buffered shared memory, and an 8x8 micro-tile per thread
+// split into four 4x4 quadrants (rows ty*4 and 64+ty*4, cols tx*4 and 64+tx*4) so shared-memory reads are
+// conflict-free float4s. Requires 16-byte aligned operands with leading dimensions (and batch strides) divisible
+// by 4; edges are handled with guarded scalar loads.
+template<bool TA,bool TB>
+__global__ void __launch_bounds__(256) GemmFastKernel(const int M,const int N,const int K,const float alpha,
+	const float* __restrict__ A,const int lda,const float* __restrict__ B,const int ldb,const float beta,float* __restrict__ C,const int ldc,
+	const int inner,const long long aO,const long long aI,const long long bO,const long long bI,const long long cO,const long long cI)
+{
+	const int z = blockIdx.z;
+	A += (z/inner)*aO+(z%inner)*aI;
+	B += (z/inner)*bO+(z%inner)*bI;
+	C += (z/inner)*cO+(z%inner)*cI;
+
+	__shared__ __align__(16) float As[2][8][128];
+	__shared__ __align__(16) float Bs[2][8][128];
+
+	const int tid = threadIdx.x;
+	const int tx = tid%16;
+	const int ty = tid/16;
+	const int row0 = blockIdx.y*128;
+	const int col0 = blockIdx.x*128;
+
+	// Each thread loads one float4 of A and one of B per k-tile.
+	// A not transposed: row = tid/2, k = (tid%2)*4 (vector along K).  A transposed: k = tid/32, row = (tid%32)*4.
+	// B not transposed: k = tid/32, col = (tid%32)*4 (vector along N). B transposed: col = tid/2, k = (tid%2)*4.
+	const int aR = TA?(tid%32)*4:tid/2;
+	const int aK = TA?tid/32:(tid%2)*4;
+	const int bC = TB?tid/2:(tid%32)*4;
+	const int bK = TB?(tid%2)*4:tid/32;
+
+	auto loadA = [&](const int k0,float4& v)
+	{
+		const int gr = row0+aR,gk = k0+aK;
+		if(!TA)
+		{
+			const float* p = A+(size_t)gr*lda+gk;
+			if(gr<M&&gk+3<K)
+				v = *reinterpret_cast<const float4*>(p);
+			else
+			{
+				v.x = (gr<M&&gk<K)?p[0]:0.0f; v.y = (gr<M&&gk+1<K)?p[1]:0.0f;
+				v.z = (gr<M&&gk+2<K)?p[2]:0.0f; v.w = (gr<M&&gk+3<K)?p[3]:0.0f;
+			}
+		}
+		else
+		{
+			const float* p = A+(size_t)gk*lda+gr;
+			if(gk<K&&gr+3<M)
+				v = *reinterpret_cast<const float4*>(p);
+			else
+			{
+				v.x = (gk<K&&gr<M)?p[0]:0.0f; v.y = (gk<K&&gr+1<M)?p[1]:0.0f;
+				v.z = (gk<K&&gr+2<M)?p[2]:0.0f; v.w = (gk<K&&gr+3<M)?p[3]:0.0f;
+			}
+		}
+	};
+	auto loadB = [&](const int k0,float4& v)
+	{
+		const int gc = col0+bC,gk = k0+bK;
+		if(!TB)
+		{
+			const float* p = B+(size_t)gk*ldb+gc;
+			if(gk<K&&gc+3<N)
+				v = *reinterpret_cast<const float4*>(p);
+			else
+			{
+				v.x = (gk<K&&gc<N)?p[0]:0.0f; v.y = (gk<K&&gc+1<N)?p[1]:0.0f;
+				v.z = (gk<K&&gc+2<N)?p[2]:0.0f; v.w = (gk<K&&gc+3<N)?p[3]:0.0f;
+			}
+		}
+		else
+		{
+			const float* p = B+(size_t)gc*ldb+gk;
+			if(gc<N&&gk+3<K)
+				v = *reinterpret_cast<const float4*>(p);
+			else
+			{
+				v.x = (gc<N&&gk<K)?p[0]:0.0f; v.y = (gc<N&&gk+1<K)?p[1]:0.0f;
+				v.z = (gc<N&&gk+2<K)?p[2]:0.0f; v.w = (gc<N&&gk+3<K)?p[3]:0.0f;
+			}
+		}
+	};
+	auto storeA = [&](const int buf,const float4& v)
+	{
+		if(!TA)
+		{
+			As[buf][aK+0][aR] = v.x; As[buf][aK+1][aR] = v.y; As[buf][aK+2][aR] = v.z; As[buf][aK+3][aR] = v.w;
+		}
+		else
+			*reinterpret_cast<float4*>(&As[buf][aK][aR]) = v;
+	};
+	auto storeB = [&](const int buf,const float4& v)
+	{
+		if(!TB)
+			*reinterpret_cast<float4*>(&Bs[buf][bK][bC]) = v;
+		else
+		{
+			Bs[buf][bK+0][bC] = v.x; Bs[buf][bK+1][bC] = v.y; Bs[buf][bK+2][bC] = v.z; Bs[buf][bK+3][bC] = v.w;
+		}
+	};
+
+	// Out-of-range loads are skipped by the guards, but the pointers must still be valid to form: clamp rows/cols.
+	float acc[8][8];
+#pragma unroll
+	for(int i=0;i<8;++i)
+#pragma unroll
+		for(int j=0;j<8;++j)
+			acc[i][j] = 0.0f;
+
+	float4 va,vb;
+	loadA(0,va);
+	loadB(0,vb);
+	storeA(0,va);
+	storeB(0,vb);
+	__syncthreads();
+
+	int buf = 0;
+	for(int k0=0;k0<K;k0+=8)
+	{
+		const bool more = k0+8<K;
+		if(more)
+		{
+			loadA(k0+8,va);
+			loadB(k0+8,vb);
+		}
+#pragma unroll
+		for(int k=0;k<8;++k)
+		{
+			const float4 a0 = *reinterpret_cast<const float4*>(&As[buf][k][ty*4]);
+			const float4 a1 = *reinterpret_cast<const float4*>(&As[buf][k][64+ty*4]);
+			const float4 b0 = *reinterpret_cast<const float4*>(&Bs[buf][k][tx*4]);
+			const float4 b1 = *reinterpret_cast<const float4*>(&Bs[buf][k][64+tx*4]);
+			const float a[8] = {a0.x,a0.y,a0.z,a0.w,a1.x,a1.y,a1.z,a1.w};
+			const float b[8] = {b0.x,b0.y,b0.z,b0.w,b1.x,b1.y,b1.z,b1.w};
+#pragma unroll
+			for(int i=0;i<8;++i)
+#pragma unroll
+				for(int j=0;j<8;++j)
+					acc[i][j] += a[i]*b[j];
+		}
+		if(more)
+		{
+			storeA(buf^1,va);
+			storeB(buf^1,vb);
+		}
+		__syncthreads();
+		buf ^= 1;
+	}
+
+#pragma unroll
+	for(int i=0;i<8;++i)
+	{
+		const int r = row0+(i<4?ty*4+i:64+ty*4+i-4);
+		if(r>=M)
+			continue;
+#pragma unroll
+		for(int j=0;j<8;++j)
+		{
+			const int c = col0+(j<4?tx*4+j:64+tx*4+j-4);
+			if(c<N)
+			{
+				float* p = C+(size_t)r*ldc+c;
+				*p = beta==0.0f?alpha*acc[i][j]:alpha*acc[i][j]+beta*(*p);
+			}
+		}
+	}
+}
+
+__global__ void SplitKReduceKernel(const float* partial,const int splits,const int M,const int N,const float beta,float* C,const int ldc)
+{
+	const size_t i = (size_t)blockIdx.x*blockDim.x+threadIdx.x;
+	if(i>=(size_t)M*N)
+		return;
+	float s = 0.0f;
+	for(int k=0;k<splits;++k)
+		s += partial[(size_t)k*M*N+i];
+	float* p = C+(i/N)*ldc+(i%N);
+	*p = beta==0.0f?s:s+beta*(*p);
+}
+
 namespace dev
 {
 	void Gemm(bool transA,bool transB,int M,int N,int K,float alpha,const float* A,int lda,const float* B,int ldb,
@@ -209,9 +391,45 @@ namespace dev
 	{
 		if(M<=0||N<=0||batch.count<=0)
 			return;
+
+		// Split-K: few output tiles but a long inner dimension (weight gradients, K = batch*time). Each split computes
+		// a partial product over a slice of K into a workspace, then a reduction adds them up.
+		if(batch.count==1&&K>=2048)
+		{
+			const int tiles = ((M+127)/128)*((N+127)/128);
+			int splits = 1;
+			while(tiles*splits<2*82&&splits<32&&K%(splits*2*8)==0&&K/(splits*2)>=256)
+				splits *= 2;
+			if(splits>1&&((size_t)A%16==0)&&((size_t)B%16==0)&&lda%4==0&&ldb%4==0)
+			{
+				const int kc = K/splits;
+				float* work = (float*)Alloc((size_t)splits*M*N*sizeof(float));
+				Batch b;
+				b.count = splits;
+				b.aOuter = transA?(long long)kc*lda:kc;
+				b.bOuter = transB?kc:(long long)kc*ldb;
+				b.cOuter = (long long)M*N;
+				Gemm(transA,transB,M,N,kc,alpha,A,lda,B,ldb,0.0f,work,N,b);
+				SplitKReduceKernel<<<Blocks((size_t)M*N,256),256>>>(work,splits,M,N,beta,C,ldc);
+				Free(work);	// Returned to the cache; stream ordering makes reuse safe.
+				return;
+			}
+		}
 		// Big tiles when there are enough of them to fill the GPU, otherwise smaller tiles for more parallelism.
 		const long long bigTiles = (long long)((M+127)/128)*((N+127)/128)*batch.count;
-		if(bigTiles>=160)
+		const bool aligned = ((size_t)A%16==0)&&((size_t)B%16==0)&&lda%4==0&&ldb%4==0&&
+			batch.aOuter%4==0&&batch.aInner%4==0&&batch.bOuter%4==0&&batch.bInner%4==0;
+		if(bigTiles>=100&&aligned&&K>=8)
+		{
+			dim3 grid((N+127)/128,(M+127)/128,batch.count);
+#define LAUNCH(ta,tb) GemmFastKernel<ta,tb><<<grid,256>>>(M,N,K,alpha,A,lda,B,ldb,beta,C,ldc,batch.inner,batch.aOuter,batch.aInner,batch.bOuter,batch.bInner,batch.cOuter,batch.cInner)
+			if(!transA&&!transB) LAUNCH(false,false);
+			else if(!transA&&transB) LAUNCH(false,true);
+			else if(transA&&!transB) LAUNCH(true,false);
+			else LAUNCH(true,true);
+#undef LAUNCH
+		}
+		else if(bigTiles>=160)
 		{
 			dim3 grid((N+127)/128,(M+127)/128,batch.count);
 			GemmKernel<128,128,8,8,8><<<grid,256>>>(transA,transB,M,N,K,alpha,A,lda,B,ldb,beta,C,ldc,
