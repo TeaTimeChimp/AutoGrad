@@ -241,6 +241,7 @@
     <ClInclude Include="KoTranspose.h" />
     <ClInclude Include="KoUnsqueeze.h" />
     <ClInclude Include="Layer.h" />
+    <ClInclude Include="LayerNorm.h" />
     <ClInclude Include="Linear.h" />
     <ClInclude Include="NDThreadPool.h" />
     <ClInclude Include="Test_Broadcast.h" />

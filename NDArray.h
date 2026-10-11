@@ -1694,7 +1694,7 @@ public:
 							// Copy p-th inner tile from tile row a.
 							copy_to_tile(
 								&x[0][0],											// Destination tile matrix.
-								a->_data,aRows,aCols,aRowStride,						// Source matrix description.
+								a->_data,aRows,aCols,aRowStride,					// Source matrix description.
 								tile_row*tile_size,p*tile_size);					// Source tile row and column.
 
 							// Copy p-th inner tile from tile row bT.
