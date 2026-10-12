@@ -300,7 +300,7 @@ private:
     {
         // Split range.
         const int subRange = (std::max)((end-begin+_numHardwareCores-1)/_numHardwareCores,1);
-        const int taskCount = (std::min)((end-begin)+subRange-1/subRange,_numHardwareCores);
+        const int taskCount = (std::min)((end-begin+subRange-1)/subRange,_numHardwareCores);
         if(subRange*taskCount<(end-begin))
             throw "Error!";
 		
@@ -309,7 +309,7 @@ private:
 
             // Enqueue tasks.
             for(int i=0;i<taskCount;++i)
-			    Run(new ForEachTask<T>(taskGroup,i*subRange,(std::min)((i+1)*subRange,end),lambda));
+			    Run(new ForEachTask<T>(taskGroup,begin+(i*subRange),(std::min)(begin+((i+1)*subRange),end),lambda));
 		}// Waits for TaskGroup.
     }
 

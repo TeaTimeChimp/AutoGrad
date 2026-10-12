@@ -206,6 +206,7 @@
   <ItemGroup>
     <ClInclude Include="CategoricalDistribution.h" />
     <ClInclude Include="CrossEntropyLoss.h" />
+    <ClInclude Include="CUDA\DeviceKernels.h" />
     <ClInclude Include="CUDA\helper_cuda.h" />
     <ClInclude Include="CUDA\helper_string.h" />
     <ClInclude Include="Dropout.h" />
@@ -244,6 +245,7 @@
     <ClInclude Include="LayerNorm.h" />
     <ClInclude Include="Linear.h" />
     <ClInclude Include="NDThreadPool.h" />
+    <ClInclude Include="ParallelFor.h" />
     <ClInclude Include="Test_Broadcast.h" />
     <ClInclude Include="TiledMatMul.h" />
     <ClInclude Include="Model.h" />
@@ -275,6 +277,7 @@
     <Text Include="TestData\XeTargets.txt" />
   </ItemGroup>
   <ItemGroup>
+    <CudaCompile Include="CUDA\DeviceKernels.cu" />
     <CudaCompile Include="CUDA\matrixMul.cu" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

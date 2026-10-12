@@ -353,6 +353,12 @@
     <ClInclude Include="LayerNorm.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="CUDA\DeviceKernels.h">
+      <Filter>Header Files\CUDA</Filter>
+    </ClInclude>
+    <ClInclude Include="ParallelFor.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <Text Include="TestData\XeLogits.txt">
@@ -367,6 +373,9 @@
   </ItemGroup>
   <ItemGroup>
     <CudaCompile Include="CUDA\matrixMul.cu">
+      <Filter>Source Files\CUDA</Filter>
+    </CudaCompile>
+    <CudaCompile Include="CUDA\DeviceKernels.cu">
       <Filter>Source Files\CUDA</Filter>
     </CudaCompile>
   </ItemGroup>
