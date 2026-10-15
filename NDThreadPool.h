@@ -5,6 +5,7 @@
 #include <vector>
 #include <queue>
 #include <iostream>
+#include <stdexcept>
 
 
 // Alignment friendly number of bytes a Task instance should be.
@@ -158,6 +159,66 @@ public:
         }
     };
 
+    // Static queue. 
+    // TODO: Template this on type and size.
+    class StaticQueue
+    {
+        static const size_t     SIZE=8;             // Static sizeof queue.
+        static const size_t     SLOT_MASK=SIZE-1;   // Masks slot/index from read/write indexes.
+
+        Task*	                _slots[SIZE];       // Static array of items.
+        size_t                  _readIndex;         // Read index, increment-only.
+        size_t                  _writeIndex;        // Write index, increment-only.
+
+    public:
+        StaticQueue():
+            _readIndex(0),
+            _writeIndex(0)
+        {
+        }
+
+        inline bool empty() const
+        {
+            _ASSERT(_readIndex<=_writeIndex);
+            return _readIndex==_writeIndex;
+        }
+
+        inline bool full() const
+        {
+            return _writeIndex-_readIndex==SIZE;
+        }
+
+        inline Task* front() const
+        {
+            if(empty())
+                throw std::runtime_error("Queue empty.");
+
+            return _slots[_readIndex&SLOT_MASK];
+        }
+
+        inline void pop()
+        {
+            if(empty())
+                throw std::runtime_error("Queue empty.");
+
+            // Erase and increment read index, queue cannot now be full.
+            _slots[_readIndex&SLOT_MASK] = nullptr;
+            ++_readIndex;
+        }
+
+        inline void push(Task* const task)
+        {
+            // Throw if queue full - rework client or increase static size.
+            if(full())
+                throw std::runtime_error("Queue full.");
+
+            // Store and increment write index.
+            _slots[_writeIndex&SLOT_MASK] = task;
+            ++_writeIndex;
+        }
+    };
+
+
     class WorkerThreadContext
     {
 		NDThreadPool&           _pool;              // Reference to the thread pool that owns this context.
@@ -167,7 +228,7 @@ public:
         // Thread local work queue.
         std::mutex              _workMutex;
         std::condition_variable _workCondition;
-        std::queue<Task*>	    _workQueue;
+        StaticQueue             _workQueue;         // Static queue, work queue should be small.
 
     public:
         WorkerThreadContext(NDThreadPool& pool,const int threadNumber):
