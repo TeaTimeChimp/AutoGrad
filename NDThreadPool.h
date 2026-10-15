@@ -7,138 +7,162 @@
 #include <iostream>
 
 
+// Alignment friendly number of bytes a Task instance should be.
+//  - Must be large enough to copy lambda (64 was too small).
+//  - 64 byte aligned in case lambda needs maximum alignment.
+//  - Size must be a multiple of alignment so arrays are space efficient.
+constexpr size_t TASK_ALIGNMENT=64;
+constexpr size_t TASK_SIZEOF=TASK_ALIGNMENT*2;
 
 class NDThreadPool
 {
-    static const int    _numHardwareCores = 32;
-    static NDThreadPool _pool;
+    const int _numHardwareCores;
 
 public:
-    // Base interface class for a queueable task.
+    // Type erased task for dispatching anonymous type lambdas.
+    //  - No virtial functions.
+    //  - Task objects can be stored in a homogenous array.
     class Task
     {
-    protected:
-        virtual void Invoke() const = 0;
+        alignas(TASK_ALIGNMENT) char _storage[TASK_SIZEOF-sizeof(void(*)())*2]; // Lambda storage - the 2 function pointers.
+        void (*_lambdaInvoke)(const void*);                                     // Pointer to lambda to type dispatch invoke.
+        void (*_lambdaDestructor)(void*);                                       // Pointer to lambda to type dispatch destructor.
+
+        Task(const Task&) = delete;
+        void operator=(const Task&) = delete;
+
+        inline void Run() const
+        {
+            _lambdaInvoke(_storage);
+        }
+
+        inline void Reset()
+        {
+            if(_lambdaDestructor)
+            {
+                _lambdaDestructor(_storage);
+                _lambdaInvoke = nullptr;
+                _lambdaDestructor = nullptr;
+            }
+        }
 
     public:
-        virtual ~Task() = default;
-
-        virtual void Run() const
+        inline Task():
+            _lambdaInvoke(nullptr),
+            _lambdaDestructor(nullptr)
         {
-            Invoke();
+            static_assert(sizeof(Task)==TASK_SIZEOF,"Unexpected Task size.");
+        }
+
+        inline ~Task()
+        {
+            Reset();
+        }
+
+        template<typename T>
+        inline void Set(T&& lambda)
+        {
+            static_assert(sizeof(T)<=sizeof(_storage),"Lambda is too large for Task storage buffer!");
+            _ASSERT(!_lambdaInvoke&&!_lambdaDestructor);
+
+            new (_storage) T(std::forward<T>(lambda));
+            _lambdaInvoke = [](const void* storage)
+            {
+                (*(T*)storage)();
+            };
+            _lambdaDestructor = [](void* storage)
+            {
+                ((T*)storage)->~T();
+            };
+        }
+
+        inline void RunAndReset()
+        {
+            Run();
+            Reset();
         }
     };
 
     class TaskGroup
     {
-	public:
-        // TaskGroup task that counts against the number of tasks in the group (i.e some real useful work).
-        class CountedTask : public Task
-        {
-            TaskGroup&  _taskGroup;
-        public:
-            CountedTask(TaskGroup& taskGroup):
-			    _taskGroup(taskGroup)
-            {
-			    _taskGroup.AddTask();
-            }
-
-            void Run() const override
-            {
-                Task::Run();
-                _taskGroup.ReleaseTask();
-                delete this;
-            }
-        };
+    public:
+        static const int MAX_TASKS = 32;            // Need a static value for array allocation.
 
     private:
-        // Uncounted task to signal/wake the potentially waiting creation thread.
-        class CompletionTask : public Task
-        {
-            bool& _taskGroupComplete;
+        NDThreadPool&       _pool;
+        const int           _creatorWorkerNumber;   // Worker thread that created this group.
+        std::atomic<int>    _taskCounter;           // Number of tasks running.
+        bool    			_taskGroupComplete;     // Flag to indicate all tasks have completed and the group can be destroyed.
+        
+        Task                _completionTask;        // Task to signal completion of the group.
+        
+        std::atomic<int>    _nextNewTaskIndex=0;
+        Task                _tasks[MAX_TASKS];      // Work will only be split into N tasks depending on CPU.
 
-            void Invoke() const override
-            {
-                _taskGroupComplete = true;
-            }
+        TaskGroup(const TaskGroup&) = delete;       // Copying a TaskGroup would break the guarantee that
+        void operator=(const TaskGroup&) = delete;  // Task lambda instances are in scope.
 
-        public:
-            CompletionTask(bool& taskGroupComplete) :
-			    _taskGroupComplete(taskGroupComplete)
-            {
-		    }
-        };
-
-		// Task to run a lambda function.
-        template<typename T>
-        class LambdaTask : public CountedTask
-        {
-		    const T _lambda;    // Thread-safe copy of lambda function.
-
-            void Invoke() const override
-            {
-                _lambda();
-            }
-
-        public:
-            LambdaTask(TaskGroup& taskGroup,const T& lambda) :
-                CountedTask(taskGroup),
-                _lambda(lambda)
-            {
-            }
-	    };
-
-		const int           _creatorWorkerNumber;   // Worker thread that created this group.
-		std::atomic<int>    _taskCounter;           // Number of tasks remaining.
-		bool    			_taskGroupComplete;     // Flag to indicate all tasks have completed and the group can be destroyed.
-		CompletionTask      _completionTask;        // Task to signal completion of the group.
-    
     public:
-        TaskGroup() :
-            _creatorWorkerNumber(NDThreadPool::_pool.GetCurrentWorkerNumber()),
-			_taskCounter(1),    // Count creation task to prevent counter dipping to 0 before the taskgroup wait.
-			_taskGroupComplete(false),
-			_completionTask(_taskGroupComplete)
-        {            
-		}
+        TaskGroup():
+            _pool(NDThreadPool::Get()),
+            _creatorWorkerNumber(_pool.GetCurrentWorkerNumber()),
+            _taskCounter(1),                    // Count creation as a Task to prevent the counter dipping to 0 before the TaskGroup wait.
+            _taskGroupComplete(false)
+        {
+            _completionTask.Set([this]()
+            {
+                _taskGroupComplete=true;    // Singal all Tasks in TaskGroup complete, breaks destructors ServiceWorkQueue loop.
+            });
+        }
 
-		// Destructor, waits for all tasks in this group to complete.
+        // Destructor, waits for all tasks in this group to complete.
         ~TaskGroup()
         {
-            // Release creation task to allow task counter to reach 0.
-            ReleaseTask();
+            // Release creation pseudo-Task to allow task counter to reach 0.
+            DecrementTaskCounter();
             
-            // Process work from the queue until all tasks in this group are complete.
+            // Process work from the queue until all Tasks in this TaskGroup are complete.
+            //  - When '_taskCounter' reaches zero the 'CompletionTask' runs and sets '_taskGroupComplete' to 'true'.
             while(!_taskGroupComplete)
-                _pool.ServiceWorkQueue();
+                _pool.ServiceWorkQueue();   // Do useful work, don't just wait.
         }
 
-		// Add a counted task to this group - work queued.
-        void AddTask()
+        // Increment the group's task counter - work queued.
+        int IncrementTaskCounter()
         {
-            ++_taskCounter;
+            return _taskCounter++;
         }
 
-		// Release a counted task in this group - work completed.
-		void ReleaseTask()
+        // Decrement the group's task counter - work completed.
+        void DecrementTaskCounter()
         {
-			// When all tasks have complete post a completion task to wake the creator thread (this thread can be the creator).
+            // When all tasks have complete post a completion task to the creator's work queue.
+            //  - This thread can be the creator, so could be queuing work for itself.
             if(--_taskCounter==0)
                 _pool.GetWorkerContext(_creatorWorkerNumber).Enqueue(&_completionTask);
         }
 
-		// Run a task in this group.
+        // Run a task in this group.
         template<typename T>
         void Run(const T& lambda)
         {
-            _pool.Run(new LambdaTask<T>(*this,lambda));
-		}
+            const int taskIndex = _nextNewTaskIndex++;
+            IncrementTaskCounter();
+            _tasks[taskIndex].Set([this,lambda]()   // Capture 'lambda' by copy, the lambda passed in is temporary.
+            {
+                lambda();
+                DecrementTaskCounter();
+                // No access to Task or TaskGroup after task counter decrement.
+            });
+            _pool.Run(&_tasks[taskIndex]);
+        }
     };
 
     class WorkerThreadContext
     {
-		const int				_threadNumber;      // Thread number associated with this context (debugging).
-		int                     _nextWorkerNumber;  // Next worker to queue work with (round-robin).
+		NDThreadPool&           _pool;              // Reference to the thread pool that owns this context.
+        const int				_threadNumber;      // Thread number associated with this context (debugging).
+        int                     _nextWorkerNumber;  // Next worker to queue work with (round-robin).
 
         // Thread local work queue.
         std::mutex              _workMutex;
@@ -146,20 +170,21 @@ public:
         std::queue<Task*>	    _workQueue;
 
     public:
-        WorkerThreadContext(const int threadNumber) :
+        WorkerThreadContext(NDThreadPool& pool,const int threadNumber):
+			_pool(pool),
             _threadNumber(threadNumber),
             _nextWorkerNumber(threadNumber)
         {
             // Wait for main thread to release before signalling.
-			std::unique_lock<std::mutex> lk(_pool._workersMutex);           
+            std::unique_lock<std::mutex> lk(_pool._workersMutex);
             lk.unlock();
-			_pool._workersCondition.notify_one();
+            _pool._workersCondition.notify_one();
         }
 
         int GetNextWorkerNumber()
         {
-            _nextWorkerNumber = (_nextWorkerNumber+1)%_numHardwareCores;
-			return _nextWorkerNumber;
+            _nextWorkerNumber = (_nextWorkerNumber+1)%_pool._numHardwareCores;
+            return _nextWorkerNumber;
         }
 
         bool ServiceWorkQueue()
@@ -168,12 +193,12 @@ public:
 
             // Wait for work to be added to the queue - blocking.
             {
-                std::unique_lock<std::mutex> lk(_workMutex);                // Take work lock before waiting on the queue.
-                _workCondition.wait(lk,[this]()                             // Release lock and suspend this thread until notified. When notified this thread will own the lock again.
+                std::unique_lock<std::mutex> lk(_workMutex);    // Take work lock before waiting on the queue.
+                _workCondition.wait(lk,[this]()                 // Release lock and suspend this thread until notified. When notified this thread will own the lock again.
                 {
-                    return !_workQueue.empty()||NDThreadPool::_pool._stop;  // Don't enter wait if either of these conditions are true.
-                });     
-                if(!_workQueue.empty()&&!NDThreadPool::_pool._stop)
+                    return !_workQueue.empty()||_pool._stop;    // Don't enter wait if either of these conditions are true.
+                });
+                if(!_workQueue.empty()&&!_pool._stop)
                 {
                     task = _workQueue.front();
                     _workQueue.pop();
@@ -184,9 +209,9 @@ public:
             if(task)
             {
                 // Run user task.
-			    task->Run();
+                task->RunAndReset();
                 return true;
-            }
+            } 
             else
                 return false;
         }
@@ -209,7 +234,7 @@ public:
         void Enqueue(Task* const task)
         {
             std::unique_lock<std::mutex> lk(_workMutex);
-		    _workQueue.push(task);
+            _workQueue.push(task);
             _workCondition.notify_one();
         }
     };
@@ -217,8 +242,8 @@ public:
     static thread_local int _currentThreadNumber;
     void SetCurrentThreadNumber(const int threadNumber)
     {
-		// Set per-thread thread number and thread affinity.
-		_currentThreadNumber = threadNumber;
+        // Set per-thread thread number and thread affinity.
+        _currentThreadNumber = threadNumber;
         SetThreadAffinityMask(GetCurrentThread(),0x1ULL<<threadNumber);
     }
 
@@ -230,12 +255,12 @@ public:
     WorkerThreadContext& GetWorkerContext(const int threadNumber) const
     {
         return *_workerContexts[threadNumber];
-	}
+    }
 
     WorkerThreadContext& GetCurrentWorkerContext() const
     {
         return GetWorkerContext(_currentThreadNumber);
-	}
+    }
 
 private:
     std::mutex                          _workersMutex;
@@ -244,63 +269,41 @@ private:
     std::vector<WorkerThreadContext*>   _workerContexts;
     std::atomic<bool>                   _stop;
 
-	// Task to run a lambda function for each value in a range.
-	template<typename T>
-    class ForEachTask : public TaskGroup::CountedTask
-    {
-        const int   _begin;
-        const int   _end;
-		const T&    _lambda;    // Lambda reference is thread-safe because it's scoped to the for loop.
-
-    public:
-        ForEachTask(TaskGroup& taskGroup,const int begin,const int end,const T& lambda) :
-            CountedTask(taskGroup),
-            _begin(begin),
-            _end(end),
-            _lambda(lambda)
-        {
-        }
-
-        void Invoke() const override
-        {
-            // Run user task for each value in range.
-            for(int i=_begin;i<_end;++i)
-                _lambda(i);
-		}
-    };
-
     bool ServiceWorkQueue()
     {
-		// Service thread work queue.
-		return GetCurrentWorkerContext().ServiceWorkQueue();
+        // Service thread work queue.
+        return GetCurrentWorkerContext().ServiceWorkQueue();
     }
 
-	// Create a new worker context for the calling thread.
+    // Create a new worker context for the calling thread.
     //
     void CreateThreadWorkerContext()
     {
-		const int threadNumber = (int)_workerContexts.size();
-        _pool.SetCurrentThreadNumber(threadNumber);
-        _workerContexts.emplace_back(new WorkerThreadContext(threadNumber));
+        const int threadNumber = (int)_workerContexts.size();
+        SetCurrentThreadNumber(threadNumber);
+        _workerContexts.emplace_back(new WorkerThreadContext(*this,threadNumber));
     }
 
-	// Entry point for a new worker thread.
+    // Entry point for a new worker thread.
     //
-    static void WorkerThreadEntryPoint(void*)
+    static void WorkerThreadEntryPoint(void* arg)
     {
-		// Associate this thread with a worker context.
-		_pool.CreateThreadWorkerContext();
-    
+        NDThreadPool& pool = *(NDThreadPool*)arg;
+
+        // Associate this thread with a worker context.
+        pool.CreateThreadWorkerContext();
+
         // Process work until stopped.
-        _pool.GetCurrentWorkerContext().ServiceQueueUntilStopped();
+        pool.GetCurrentWorkerContext().ServiceQueueUntilStopped();
     }
 
     template<typename T>
     void _ForEach(const int begin,const int end,const T& lambda)
     {
         // Split range.
-        const int subRange = (std::max)((end-begin+_numHardwareCores-1)/_numHardwareCores,1);
-        const int taskCount = (std::min)((end-begin+subRange-1)/subRange,_numHardwareCores);
+        // TODO: Need a lower limit on viable subRange size.
+        const int subRange = (std::max)((end-begin+TaskGroup::MAX_TASKS-1)/TaskGroup::MAX_TASKS,1);
+        const int taskCount = (std::min)((end-begin+subRange-1)/subRange,TaskGroup::MAX_TASKS);
         if(subRange*taskCount<(end-begin))
             throw "Error!";
 		
@@ -309,12 +312,21 @@ private:
 
             // Enqueue tasks.
             for(int i=0;i<taskCount;++i)
-			    Run(new ForEachTask<T>(taskGroup,begin+(i*subRange),(std::min)(begin+((i+1)*subRange),end),lambda));
+            {
+                const int rangeBegin = begin+(i*subRange);
+                const int rangeEnd = (std::min)(begin+((i+1)*subRange),end);
+			    taskGroup.Run([rangeBegin,rangeEnd,&lambda]()   // See comment inside 'Run', the lambda passed here (not the captured parameter '&lambda') is temporary.
+                {
+                    for(int i=rangeBegin;i<rangeEnd;++i)
+                        lambda(i);
+                });
+            }
 		}// Waits for TaskGroup.
     }
 
 public:
-    NDThreadPool() :
+    NDThreadPool():
+		_numHardwareCores((int)(std::max)(1u,std::thread::hardware_concurrency())),
         _stop(false)
     {
         // Create the first worker context for this thread.
@@ -324,8 +336,8 @@ public:
         for(int i=1;i<_numHardwareCores;++i)
         {
             std::unique_lock<std::mutex> lk(_workersMutex);
-            _workerThreads.emplace_back(WorkerThreadEntryPoint,nullptr);    // Create a new thread running the WorkerLoop.
-            _workersCondition.wait(lk);                                     // Wait for the new worker to signal it's running.
+            _workerThreads.emplace_back(WorkerThreadEntryPoint,this);    // Create a new thread running the WorkerLoop.
+            _workersCondition.wait(lk);                                  // Wait for the new worker to signal it's running.
         }
     }
 
@@ -347,6 +359,12 @@ public:
             delete worker;
     }
 
+    static NDThreadPool& Get()
+    {
+		static NDThreadPool singleton;
+        return singleton;
+    }
+
 	void Run(Task* const task)
     {
 		// Queue the task with the next worker.
@@ -358,7 +376,7 @@ public:
     static void ForEach(const int begin,const int end,const T& lambda)
     {
         // Call instance method.
-		_pool._ForEach(begin,end,lambda);
+		Get()._ForEach(begin,end,lambda);
     }
 };
 
