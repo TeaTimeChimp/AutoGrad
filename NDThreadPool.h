@@ -3,8 +3,6 @@
 #include <Windows.h>
 #include <mutex>
 #include <vector>
-#include <queue>
-#include <iostream>
 #include <stdexcept>
 
 
