@@ -1,9 +1,9 @@
 #pragma once
 
 #include <Windows.h>
-#include <mutex>
 #include <vector>
 #include <stdexcept>
+#include <thread>
 
 
 // Alignment friendly number of bytes a Task instance should be.
@@ -15,7 +15,7 @@ constexpr size_t TASK_SIZEOF=TASK_ALIGNMENT*2;
 
 class NDThreadPool
 {
-    const int _numHardwareCores;
+    const int _numHardwareThreads;
 
 public:
     // Type erased task for dispatching anonymous type lambdas.
@@ -105,12 +105,12 @@ public:
         TaskGroup():
             _pool(NDThreadPool::Get()),
             _creatorWorkerNumber(_pool.GetCurrentWorkerNumber()),
-            _taskCounter(1),                    // Count creation as a Task to prevent the counter dipping to 0 before the TaskGroup wait.
+            _taskCounter(1),                        // Count creation as a Task to prevent the counter dipping to 0 before the TaskGroup wait.
             _taskGroupComplete(false)
         {
             _completionTask.Set([this]()
             {
-                _taskGroupComplete=true;    // Singal all Tasks in TaskGroup complete, breaks destructors ServiceWorkQueue loop.
+                _taskGroupComplete=true;            // Signal all Tasks in TaskGroup complete, breaks destructors ServiceWorkQueue loop.
             });
         }
 
@@ -217,32 +217,156 @@ public:
     };
 
 
+    class CasLock
+    {
+    public:
+        class Locker
+        {
+            CasLock&    _lock;
+            bool        _locked;
+        public:
+            inline Locker(CasLock& lock):
+                _lock(lock),
+                _locked(false)
+            {
+                Acquire();
+            }
+
+            inline ~Locker()
+            {
+                Release();
+            }
+    
+            inline void Acquire()
+            {
+                if(!_locked)
+                {
+                    _lock.Acquire();
+                    _locked = true;
+                }
+            }
+
+            inline void Release()
+            {
+                if(_locked)
+                {
+                    _lock.Release();
+                    _locked = false;
+                }
+            }
+        };
+
+    private:
+        static const int NotOwned = -1;
+        std::atomic<int> _owner;
+    
+    public:
+        CasLock():
+            _owner(NotOwned)
+        {
+        }
+
+        void Acquire()
+        {
+            const int myWorkerNumber = NDThreadPool::GetCurrentWorkerNumber();
+
+            int owningWorkerNumber;
+            owningWorkerNumber = NotOwned;
+            for(;;)
+            {
+                // Try to take ownership.
+                if(_owner.compare_exchange_strong(owningWorkerNumber,myWorkerNumber))
+                    break;
+
+                // Contention, wait until the lock appears free.
+                while(_owner.load(std::memory_order_relaxed)!=NotOwned)
+                    _mm_pause();
+            }
+        }
+    
+        void Release()
+        {
+            const int myWorkerNumber = NDThreadPool::GetCurrentWorkerNumber();
+            if(_owner!=myWorkerNumber)
+                throw std::runtime_error("Not owned.");
+            _owner = NotOwned;
+        }
+    };
+
+
+    class CasCondition
+    {
+        std::atomic<bool>   _signal;
+    public:
+        CasCondition():
+            _signal(false)
+        {
+        }
+
+        void Wait(CasLock::Locker& locker)
+        {
+            // Release lock and sleep until notified.
+            locker.Release();
+
+            // Sleep if contition is false.
+            bool notSignalled = false;
+            do
+            {
+                WaitOnAddress(&_signal,&notSignalled,sizeof(bool),INFINITE);    // Waits if _signal==notSignalled.
+            } while(!_signal);  // Loop on spurious wakes.
+
+            // Re-aquire lock.
+            locker.Acquire();
+
+            // Reset signal.
+            _signal = false;
+        }
+
+        template<typename T>
+        void Wait(CasLock::Locker& locker,const T& noWait)
+        {
+            while(!noWait())
+                Wait(locker);
+        }
+
+        void NotifyOne()
+        {
+            // Set signal and wake waiting thread.
+            _signal = true;
+            WakeByAddressSingle(&_signal);
+        }
+    };
+
+
     class WorkerThreadContext
     {
-		NDThreadPool&           _pool;              // Reference to the thread pool that owns this context.
-        const int				_threadNumber;      // Thread number associated with this context (debugging).
-        int                     _nextWorkerNumber;  // Next worker to queue work with (round-robin).
+		NDThreadPool&   _pool;              // Reference to the thread pool that owns this context.
+        const int		_workerNumber;      // Worker number associated with this context.
+        int             _nextWorkerNumber;  // Next worker to queue work with (round-robin).
 
         // Thread local work queue.
-        std::mutex              _workMutex;
-        std::condition_variable _workCondition;
-        StaticQueue             _workQueue;         // Static queue, work queue should be small.
+        CasLock         _workMutex;
+        CasCondition    _workCondition;
+        StaticQueue     _workQueue;         // Static queue, work queue should be small.
 
     public:
-        WorkerThreadContext(NDThreadPool& pool,const int threadNumber):
+        WorkerThreadContext(NDThreadPool& pool,const int workerNumber):
 			_pool(pool),
-            _threadNumber(threadNumber),
-            _nextWorkerNumber(threadNumber)
+            _workerNumber(workerNumber),
+            _nextWorkerNumber(workerNumber)
         {
             // Wait for main thread to release before signalling.
-            std::unique_lock<std::mutex> lk(_pool._workersMutex);
-            lk.unlock();
-            _pool._workersCondition.notify_one();
+            if(workerNumber!=0)
+            {
+                CasLock::Locker lk(_pool._workersMutex);
+                lk.Release();
+                _pool._workersCondition.NotifyOne();
+            }
         }
 
         int GetNextWorkerNumber()
         {
-            _nextWorkerNumber = (_nextWorkerNumber+1)%_pool._numHardwareCores;
+            _nextWorkerNumber = (_nextWorkerNumber+1)%_pool._numHardwareThreads;
             return _nextWorkerNumber;
         }
 
@@ -252,8 +376,8 @@ public:
 
             // Wait for work to be added to the queue - blocking.
             {
-                std::unique_lock<std::mutex> lk(_workMutex);    // Take work lock before waiting on the queue.
-                _workCondition.wait(lk,[this]()                 // Release lock and suspend this thread until notified. When notified this thread will own the lock again.
+                CasLock::Locker lk(_workMutex);                 // Take work lock before waiting on the queue.
+                _workCondition.Wait(lk,[this]()                 // Release lock and suspend this thread until notified. When notified this thread will own the lock again.
                 {
                     return !_workQueue.empty()||_pool._stop;    // Don't enter wait if either of these conditions are true.
                 });
@@ -275,7 +399,6 @@ public:
                 return false;
         }
 
-
         // Process work until stopped.
         //
         void ServiceQueueUntilStopped()
@@ -286,29 +409,33 @@ public:
 
         void Wake()
         {
-            std::unique_lock<std::mutex> lk(_workMutex);
-            _workCondition.notify_one();
+            CasLock::Locker lk(_workMutex);
+            _workCondition.NotifyOne();
         }
 
         void Enqueue(Task* const task)
         {
-            std::unique_lock<std::mutex> lk(_workMutex);
+            CasLock::Locker lk(_workMutex);
+            const bool wasEmpty = _workQueue.empty();
             _workQueue.push(task);
-            _workCondition.notify_one();
+            if(wasEmpty)
+                _workCondition.NotifyOne();
         }
     };
 
-    static thread_local int _currentThreadNumber;
-    void SetCurrentThreadNumber(const int threadNumber)
+    static thread_local int _currentWorkerNumber;
+    void SetCurrentWorkerNumber(const int workerNumber)
     {
         // Set per-thread thread number and thread affinity.
-        _currentThreadNumber = threadNumber;
-        SetThreadAffinityMask(GetCurrentThread(),0x1ULL<<threadNumber);
+        _currentWorkerNumber = workerNumber;
+        SetThreadAffinityMask(GetCurrentThread(),0x1ULL<<workerNumber);
     }
 
-    int GetCurrentWorkerNumber() const
+    // Returns the callers 'worker number' stored in TLS.
+    //
+    static int GetCurrentWorkerNumber()
     {
-        return _currentThreadNumber;
+        return _currentWorkerNumber;
     }
 
     WorkerThreadContext& GetWorkerContext(const int threadNumber) const
@@ -318,12 +445,12 @@ public:
 
     WorkerThreadContext& GetCurrentWorkerContext() const
     {
-        return GetWorkerContext(_currentThreadNumber);
+        return GetWorkerContext(_currentWorkerNumber);
     }
 
 private:
-    std::mutex                          _workersMutex;
-    std::condition_variable             _workersCondition;
+    CasLock                             _workersMutex;
+    CasCondition                        _workersCondition;
     std::vector<std::thread>            _workerThreads;
     std::vector<WorkerThreadContext*>   _workerContexts;
     std::atomic<bool>                   _stop;
@@ -339,7 +466,7 @@ private:
     void CreateThreadWorkerContext()
     {
         const int threadNumber = (int)_workerContexts.size();
-        SetCurrentThreadNumber(threadNumber);
+        SetCurrentWorkerNumber(threadNumber);
         _workerContexts.emplace_back(new WorkerThreadContext(*this,threadNumber));
     }
 
@@ -385,19 +512,20 @@ private:
 
 public:
     NDThreadPool():
-		_numHardwareCores((int)(std::max)(1u,std::thread::hardware_concurrency())),
+		_numHardwareThreads((int)(std::max)(1u,std::thread::hardware_concurrency())),
         _stop(false)
     {
-        // Create the first worker context for this thread.
+        // Create the first worker context for this thread (main).
         CreateThreadWorkerContext();
 
         // Start n more worker threads.
-        for(int i=1;i<_numHardwareCores;++i)
+        for(int i=1;i<_numHardwareThreads;++i)
         {
-            std::unique_lock<std::mutex> lk(_workersMutex);
+            CasLock::Locker lk(_workersMutex);
             _workerThreads.emplace_back(WorkerThreadEntryPoint,this);    // Create a new thread running the WorkerLoop.
-            _workersCondition.wait(lk);                                  // Wait for the new worker to signal it's running.
+            _workersCondition.Wait(lk);                                  // Wait for the new worker to signal it's running.
         }
+        _ASSERT(_workerContexts.size()==_numHardwareThreads);
     }
 
     ~NDThreadPool()
@@ -438,4 +566,3 @@ public:
 		Get()._ForEach(begin,end,lambda);
     }
 };
-

@@ -4,7 +4,7 @@
 
 void foo(const int i)
 {
-	Sleep(10000*(i+1));	// Add a long wait for debugging.
+	Sleep(1000*(i+1));	// Add a long wait for debugging.
 }
 
 
@@ -15,10 +15,7 @@ void Test_NDThreadPool()
 
 	NDThreadPool::ForEach(0,1,foo);
 
-	NDThreadPool::ForEach(0,2,[](const int i)
-	{
-		Sleep(1000*(i+1));
-	});
+	NDThreadPool::ForEach(0,2,foo);
 
 
 	// Outer 'foreach' runs 2 nested 'foreach' loops.
