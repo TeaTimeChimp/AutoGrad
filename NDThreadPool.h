@@ -19,7 +19,7 @@ class NDThreadPool
 
 public:
     // Type erased task for dispatching anonymous type lambdas.
-    //  - No virtial functions.
+    //  - No virtual functions.
     //  - Task objects can be stored in a homogenous array.
     class Task
     {
@@ -77,8 +77,8 @@ public:
 
         inline void RunAndReset()
         {
-            Run();
-            Reset();
+            Run();      // Run user task.
+            Reset();    // Run lambda destructor.
         }
     };
 
@@ -88,14 +88,14 @@ public:
         static const int MAX_TASKS = 32;            // Need a static value for array allocation.
 
     private:
-        NDThreadPool&       _pool;
+        NDThreadPool&       _pool;                  // Reference to the thread pool.
         const int           _creatorWorkerNumber;   // Worker thread that created this group.
         std::atomic<int>    _taskCounter;           // Number of tasks running.
         bool    			_taskGroupComplete;     // Flag to indicate all tasks have completed and the group can be destroyed.
         
         Task                _completionTask;        // Task to signal completion of the group.
         
-        std::atomic<int>    _nextNewTaskIndex=0;
+        std::atomic<int>    _nextNewTaskIndex=0;    // Next new task index, 0 to MAX_TASKS-1.
         Task                _tasks[MAX_TASKS];      // Work will only be split into N tasks depending on CPU.
 
         TaskGroup(const TaskGroup&) = delete;       // Copying a TaskGroup would break the guarantee that
@@ -104,7 +104,7 @@ public:
     public:
         TaskGroup():
             _pool(NDThreadPool::Get()),
-            _creatorWorkerNumber(_pool.GetCurrentWorkerNumber()),
+            _creatorWorkerNumber(_pool.GetCurrentWorkerNumber()),   
             _taskCounter(1),                        // Count creation as a Task to prevent the counter dipping to 0 before the TaskGroup wait.
             _taskGroupComplete(false)
         {
@@ -188,17 +188,13 @@ public:
 
         inline Task* front() const
         {
-            if(empty())
-                throw std::runtime_error("Queue empty.");
-
+            _ASSERT_EXPR(!empty(),"Queue empty.");
             return _slots[_readIndex&SLOT_MASK];
         }
 
         inline void pop()
         {
-            if(empty())
-                throw std::runtime_error("Queue empty.");
-
+            _ASSERT_EXPR(!empty(),"Queue empty.");
             // Erase and increment read index, queue cannot now be full.
             _slots[_readIndex&SLOT_MASK] = nullptr;
             ++_readIndex;
@@ -206,9 +202,7 @@ public:
 
         inline void push(Task* const task)
         {
-            // Throw if queue full - rework client or increase static size.
-            if(full())
-                throw std::runtime_error("Queue full.");
+            _ASSERT_EXPR(!full(),"Queue full."); // Rework client or increase static size.
 
             // Store and increment write index.
             _slots[_writeIndex&SLOT_MASK] = task;
@@ -490,8 +484,7 @@ private:
         // TODO: Need a lower limit on viable subRange size.
         const int subRange = (std::max)((end-begin+TaskGroup::MAX_TASKS-1)/TaskGroup::MAX_TASKS,1);
         const int taskCount = (std::min)((end-begin+subRange-1)/subRange,TaskGroup::MAX_TASKS);
-        if(subRange*taskCount<(end-begin))
-            throw "Error!";
+        _ASSERT(subRange*taskCount>=(end-begin));
 		
         {// Scoped TaskGroup.
 		    TaskGroup taskGroup;
